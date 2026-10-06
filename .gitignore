@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+.superpowers/
+.worktrees/
+work/
+artifacts/
+*.user
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.log
+scan-report*

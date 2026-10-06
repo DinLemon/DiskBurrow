@@ -1,0 +1,20 @@
+DiskBurrow 0.1.0 / Windows x64
+
+Extract the entire ZIP into a writable folder, then open DiskBurrow.exe.
+Windows 10 22H2 or Windows 11 x64 is required. .NET is bundled.
+This build is unsigned. Check the SHA-256 against the release checksum.
+Closing the window hides it to the tray; use tray Exit to stop monitoring.
+Russian is the default language; select English in Settings.
+Autostart is off until you explicitly enable it and save Settings.
+Cleanup permanently deletes only explicitly selected preview candidates.
+Review paths, age, exclusions and confirmation carefully. There is no undo.
+Do not run elevated. User history/settings are outside this application folder.
+Read the complete rules, limitations and verification status:
+https://github.com/DinLemon/DiskBurrow
+https://github.com/DinLemon/DiskBurrow/releases
+
+Распакуйте ZIP целиком и запустите DiskBurrow.exe. .NET включён в пакет.
+Закрытие окна оставляет приложение в трее; для остановки выберите Выход.
+Автозапуск выключен до явного сохранения настройки.
+Очистка безвозвратно удаляет только выбранные файлы после подтверждения.
+Проверьте пути и исключения. Отмены удаления нет. Повышение прав не нужно.
