@@ -29,7 +29,7 @@ jobs:
       - name: Package portable release
         shell: pwsh
         run: |
-          $version = '0.1.1'
+          $version = '0.2.0'
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
             if ($env:GITHUB_REF_NAME -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$') { throw 'Invalid release tag.' }
             $version = $env:GITHUB_REF_NAME.Substring(1)
@@ -60,7 +60,7 @@ jobs:
           $proof = $proofs[0]
           $runtime = Get-Content -LiteralPath $proof.FullName -Raw | ConvertFrom-Json
           $packageRoot = (Resolve-Path work/portable-smoke).Path + [IO.Path]::DirectorySeparatorChar
-          if (-not $runtime.Success -or $runtime.Runtime -ne '10.0.12' -or -not $runtime.ResourcesSwitched -or $runtime.MonitoringStarted -or $runtime.CleanupExecuted -or $runtime.AutostartApplied) { throw 'Runtime proof is incomplete.' }
+          if (-not $runtime.Success -or $runtime.Runtime -ne '10.0.12' -or -not $runtime.ResourcesSwitched -or -not $runtime.LiveMapVerified -or $runtime.Mft -ne $null -or $runtime.MonitoringStarted -or $runtime.CleanupExecuted -or $runtime.AutostartApplied) { throw 'Runtime proof is incomplete.' }
           foreach ($module in @('coreclr.dll','hostpolicy.dll','e_sqlite3.dll')) {
             if (-not $runtime.Modules.$module.StartsWith($packageRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Runtime module was not loaded from the ZIP.' }
           }

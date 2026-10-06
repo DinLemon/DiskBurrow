@@ -16,6 +16,7 @@ public sealed class MonitoringCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _operationGate = new(1);
     private readonly CancellationTokenSource _lifetime = new();
     private readonly Dictionary<string, Task<ScanSnapshot>> _scans = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IDiskScanner> _scanEngines = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ScanSnapshot> _previous = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<Task> _exclusiveTasks = [];
     private CancellationTokenSource? _activeScanCancellation;
@@ -56,8 +57,11 @@ public sealed class MonitoringCoordinator : IAsyncDisposable
     },ct);
 
     public Task<ScanSnapshot> RequestScanAsync(CancellationToken ct) => RequestScanAsync(_environment.SystemRoot, ct);
-    public Task<ScanSnapshot> RequestScanAsync(string root, CancellationToken ct)
+    public Task<ScanSnapshot> RequestScanAsync(string root, CancellationToken ct) => RequestScanAsync(root, _scanner, ct);
+    // Interactive-only alternative. The scheduled loop always calls the normal-scanner overload.
+    public Task<ScanSnapshot> RequestScanAsync(string root, IDiskScanner scanner, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(scanner);
         if (ct.IsCancellationRequested) return Task.FromCanceled<ScanSnapshot>(ct);
         try
         {
@@ -70,15 +74,18 @@ public sealed class MonitoringCoordinator : IAsyncDisposable
             if (_lifetime.IsCancellationRequested) return Task.FromCanceled<ScanSnapshot>(_lifetime.Token);
             if (!_scans.TryGetValue(root, out var task))
             {
-                task = ScanAsync(root);
+                task = ScanAsync(root, scanner);
+                _scanEngines.Add(root, scanner);
                 _scans.Add(root, task);
             }
+            else if (!ReferenceEquals(_scanEngines[root], scanner))
+                return Task.FromException<ScanSnapshot>(new InvalidOperationException("A different scan engine already has a request for this root."));
             // Cancelling one caller's wait does not cancel another caller's shared scan.
             return ct.CanBeCanceled ? task.WaitAsync(ct) : task;
         }
     }
 
-    private async Task<ScanSnapshot> ScanAsync(string root)
+    private async Task<ScanSnapshot> ScanAsync(string root, IDiskScanner scanner)
     {
         await Task.Yield(); // Register task before any synchronous fake/native completion.
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
@@ -99,7 +106,7 @@ public sealed class MonitoringCoordinator : IAsyncDisposable
                 try { previous = (await _history.LoadRecentAsync(root, 1, ct)).FirstOrDefault(); }
                 catch (Exception e) when (e is not OperationCanceledException) { Report(e.Message); }
             }
-            var snapshot = await _scanner.ScanAsync(root, new ScanProgressRelay(p => ProgressChanged?.Invoke(p)), ct);
+            var snapshot = await scanner.ScanAsync(root, new ScanProgressRelay(p => ProgressChanged?.Invoke(p)), ct);
             ct.ThrowIfCancellationRequested();
             if (!snapshot.TraversalCompleted) return snapshot;
             if (!StringComparer.OrdinalIgnoreCase.Equals(SnapshotComparer.NormalizePath(snapshot.Root), root))
@@ -124,6 +131,7 @@ public sealed class MonitoringCoordinator : IAsyncDisposable
             lock (_sync)
             {
                 _scans.Remove(root);
+                _scanEngines.Remove(root);
                 if (entered) { _operationRunning = false; _activeScanCancellation = null; }
             }
             if (entered) _operationGate.Release();

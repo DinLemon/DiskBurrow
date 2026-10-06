@@ -20,7 +20,7 @@ public sealed class LocalizationService
     {
         if(!Texts.ContainsKey(language))throw new ArgumentException("Unsupported language.");
         Language=language;CultureInfo.CurrentCulture=CultureInfo.GetCultureInfo(language);CultureInfo.CurrentUICulture=CultureInfo.CurrentCulture;
-        if(Application.Current is {} app){if(active is not null)app.Resources.MergedDictionaries.Remove(active);active=new(){Source=new Uri($"Resources/Strings.{language}.xaml",UriKind.Relative)};app.Resources.MergedDictionaries.Add(active);}
+        if(Application.Current is {} app){if(active is not null)app.Resources.MergedDictionaries.Remove(active);active=new(){Source=new Uri($"/DiskBurrow;component/Resources/Strings.{language}.xaml",UriKind.Relative)};app.Resources.MergedDictionaries.Add(active);}
         Changed?.Invoke();
     }
 }

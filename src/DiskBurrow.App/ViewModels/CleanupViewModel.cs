@@ -4,6 +4,7 @@ using DiskBurrow.Core.History;
 namespace DiskBurrow.App.ViewModels;
 public sealed class CleanupViewModel(ICleanupPlanner planner,ICleanupExecutor executor,IHistoryStore? history,IUiDispatcher dispatcher,Func<string?>? historyDiagnostic=null) : ObservableModel
 {
+    private static readonly string[] SupportedRules=["UserTemp","CrashDumps","ChromeCache","EdgeCache"];
     private readonly HashSet<Guid> selected=[];
     private readonly HashSet<Guid> excluded=[];
     private readonly HashSet<string> excludedCategories=new(StringComparer.Ordinal);
@@ -14,6 +15,7 @@ public sealed class CleanupViewModel(ICleanupPlanner planner,ICleanupExecutor ex
     public IReadOnlySet<Guid> SelectedIds=>selected.ToHashSet();
     public IReadOnlyList<CleanupCandidate> VisibleCandidates {get;private set;}=[];
     public IReadOnlyList<string> Categories {get;private set;}=[];
+    public IReadOnlyList<CleanupCategorySummary> CategorySummaries {get;private set;}=[];
     public CleanupReport? Report {get;private set;}
     public string? JournalError {get;private set;}
     public bool Busy {get;private set;}
@@ -29,8 +31,13 @@ public sealed class CleanupViewModel(ICleanupPlanner planner,ICleanupExecutor ex
         try {
             await dispatcher.InvokeAsync(()=>{Busy=true;Refresh();});
             var plan=await planner.PreviewAsync(ExcludedPaths,ct);
-            var prepared=await Task.Run(()=>(Rows:plan.Candidates.OrderByDescending(c=>c.File.LogicalBytes).Take(2000).ToArray(),Index:plan.Candidates.ToDictionary(c=>c.Id),Categories:plan.Candidates.Select(c=>c.Rule.RuleId).Distinct().Prepend("All").ToArray()),ct);
-            await dispatcher.InvokeAsync(()=>{Plan=plan;byId=prepared.Index;Categories=prepared.Categories;selected.Clear();excluded.Clear();excludedCategories.Clear();Report=null;JournalError=null;UnattemptedCount=0;VisibleCandidates=prepared.Rows;Refresh();});
+            var prepared=await Task.Run(()=>(Rows:plan.Candidates.OrderByDescending(c=>c.File.LogicalBytes).Take(2000).ToArray(),Index:plan.Candidates.ToDictionary(c=>c.Id),Summaries:SupportedRules.Select(rule=>
+            {
+                var candidates=plan.Candidates.Where(c=>c.Rule.RuleId==rule).ToArray();
+                var warnings=plan.Warnings.Where(w=>w.RuleId==rule).Select(w=>w.ReasonKey).Distinct().ToArray();
+                return new CleanupCategorySummary(rule,candidates.Length,candidates.Sum(c=>c.File.LogicalBytes),warnings.Length>0?"Cleanup.HasWarnings":candidates.Length==0?"Cleanup.NoEligible":"Cleanup.Eligible",warnings);
+            }).ToArray()),ct);
+            await dispatcher.InvokeAsync(()=>{Plan=plan;byId=prepared.Index;Categories=SupportedRules.Prepend("All").ToArray();CategorySummaries=prepared.Summaries;selected.Clear();excluded.Clear();excludedCategories.Clear();Report=null;JournalError=null;UnattemptedCount=0;VisibleCandidates=prepared.Rows;Refresh();});
         } finally { await dispatcher.InvokeAsync(()=>{Busy=false;Refresh();}); gate.Release(); }
     }
     public void Select(Guid id,bool value)
@@ -61,3 +68,4 @@ public sealed class CleanupViewModel(ICleanupPlanner planner,ICleanupExecutor ex
         }finally {await dispatcher.InvokeAsync(()=>{Busy=false;Refresh();});gate.Release();}
     }
 }
+public sealed record CleanupCategorySummary(string RuleId,int Count,long LogicalBytes,string StatusKey,IReadOnlyList<string> WarningKeys);

@@ -13,6 +13,19 @@ namespace DiskBurrow.Tests;
 
 public class FinalIntegrationTests
 {
+    [Fact] public async Task CleanupCategorySummaryLocalizesWithoutDiscardingSelectedCandidate()
+    {
+        using var tree=new TempTree();await using var fixture=new ModelFixture(tree.Root,new MemoryHistory());await fixture.Model.AnalyzeAsync();
+        var model=fixture.Model;var id=model.Cleanup.VisibleCandidates[0].Id;model.Cleanup.Select(id,true);
+        model.Language="en";
+        Assert.Equal(4,model.CleanupCategorySummaries.Count);
+        Assert.Equal(LocalizationService.ReadText("en","UserTemp"),model.CleanupCategorySummaries[0].Category);
+        Assert.Equal(LocalizationService.ReadText("en","Cleanup.NoEligible"),model.CleanupCategorySummaries[1].Status);
+        Assert.Equal(LocalizationService.ReadText("en","UserTemp"),Assert.Single(model.CleanupRows).Category);
+        model.Language="ru";
+        Assert.Equal(LocalizationService.ReadText("ru","UserTemp"),model.CleanupCategorySummaries[0].Category);
+        Assert.Contains(id,model.Cleanup.SelectedIds);Assert.True(Assert.Single(model.CleanupRows).Selected);
+    }
     [Fact] public async Task PausedRuntimeReopensRetainedHistoryWithoutScanning()
     {
         using var tree=new TempTree();var root=new WindowsEnvironment().SystemRoot;

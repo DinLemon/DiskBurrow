@@ -17,7 +17,7 @@
 </p>
 
 <p>
-  <a href="https://github.com/DinLemon/DiskBurrow/releases/download/v0.1.1/DiskBurrow-0.1.1-win-x64.zip"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/DinLemon/DiskBurrow/releases/download/v0.2.0/DiskBurrow-0.2.0-win-x64.zip"><strong>Download for Windows</strong></a>
   &nbsp; · &nbsp; <a href="#install-and-run">Quick start</a>
   &nbsp; · &nbsp; <a href="README.ru.md">Русский</a>
 </p>
@@ -30,8 +30,8 @@
 
 ## Install and run
 
-1. Download `DiskBurrow-0.1.1-win-x64.zip` and its `.sha256` from Releases. Verify with `Get-FileHash .\DiskBurrow-0.1.1-win-x64.zip -Algorithm SHA256` and compare the complete hash.
-2. Extract the **whole** ZIP into a folder; keep its files together. Run `DiskBurrow.exe` as your ordinary user. Requires Windows 10 22H2 or Windows 11 x64; .NET 10.0.12 and native SQLite are bundled. No installer, service or elevation is required.
+1. Download `DiskBurrow-0.2.0-win-x64.zip` and its `.sha256` from Releases. Verify with `Get-FileHash .\DiskBurrow-0.2.0-win-x64.zip -Algorithm SHA256` and compare the complete hash.
+2. Extract the **whole** ZIP into a folder; keep its files together. Run `DiskBurrow.exe` as your ordinary user. Requires Windows 10 22H2 or Windows 11 x64; .NET 10.0.12 and native SQLite are bundled. The optional fast NTFS scan requests UAC for a separate process that only reads disk metadata.
 3. Russian is the default; switch to English in Settings. Closing the window hides it to the tray. Tray **Exit** cancels/drains work and ends monitoring. A second copy activates the first instance for your user.
 
 The build is **unsigned**; Windows may show an unknown-publisher/SmartScreen warning. Review the source and checksum before deciding to run it. A checksum checks integrity; it is not a publisher signature.
@@ -54,7 +54,23 @@ The build is **unsigned**; Windows may show an unknown-publisher/SmartScreen war
 - Chrome/Edge HTTP `Cache` / `Cache_Data` only, when the corresponding browser is closed. Browser state that cannot be verified blocks that rule. Cookies, passwords, history, service-worker storage and downloads are not cleanup targets. Browser caches have no age threshold.
 - Reparse points and cloud placeholders are skipped and never hydrated. The scanner avoids double-charging hard-linked physical allocation; logical path sizes may still repeat. Cleanup may remove an explicitly selected hard-link path after normal revalidation; other links remain, so deletion may release no physical space. Inaccessible/changing entries make coverage incomplete and physical totals unknown. Logical size, known allocation subtotals and Windows used-space counters are different measurements. A completed traversal does not mean complete volume coverage.
 
-NuGet/pip cache suggestions only link to supported program tools; DiskBurrow never executes them or automatically deletes those caches. UI bounds are 1,000 directories, 100 largest files and 2,000 cleanup rows; summaries identify truncation and the full completed snapshot remains available for export/history.
+NuGet/pip cache suggestions only link to supported program tools; DiskBurrow never executes them or automatically deletes those caches. The Largest tables show up to 1,000 directories and 100 files; Cleanup shows up to 2,000 candidates. Summaries identify truncation. The disk map uses a separate full live index of observed files; retained history and JSON snapshot exports preserve the existing bounded file list.
+
+## Disk map and fast NTFS scan
+
+The map shows nested folders and files, with area based on size and colors by file type. Navigate into a folder, use breadcrumbs or back/forward/up, zoom with the wheel or keyboard, and filter names with highlighting or isolation. Select a local volume and inspect its used/free counters. Historical snapshots without a full live index are explicitly limited.
+
+Fast scan is an explicit operation for a whole local NTFS volume. Accepting UAC starts a separate read-only MFT helper; background monitoring and cleanup remain in the ordinary user process. Cancelling UAC cancels the request. Unsupported formats or damaged metadata produce an error; use the ordinary scan to inspect a local folder or another filesystem. The MFT of a running volume is not an atomic snapshot and can lag recent changes. A deletion always requires a fresh native preview.
+
+The UAC helper must run as the same Windows account. Entering another administrator account's credentials is unsupported and fails without scanning. The parser and pipe enforce record, payload and estimated metadata memory bounds; exceptionally large volumes can exceed these limits and require an ordinary scan. MFT physical totals include named data streams; the ordinary walker measures the main stream, so their totals can differ.
+
+## Delete selected folders and files
+
+Mark individual folders/files in Largest or the disk map, then review the selected roots, file/folder counts, data size and warnings. Selecting a parent includes its children once. Permanent deletion requires a separate confirmation; cancelling it leaves the files intact. Changing the selection, scan root or snapshot invalidates the preview.
+
+This manual operation is separate from the four cache cleanup rules. Volume roots, system locations, broad user containers and the application's own files/data are protected. Unresolved protected boundaries, inaccessible entries, links and cloud placeholders block a complete deletion plan. Changed, busy or newly created entries are preserved; the result and local journal include partial failures and cancellation. Deletion does not inherit administrator rights from the scan helper.
+
+Disk map layout and NTFS parsing are adapted from [disktree](https://github.com/tobi/disktree), under MIT. See [third-party notices](THIRD_PARTY_NOTICES.txt).
 
 ## Recovering corrupt history
 
@@ -70,11 +86,11 @@ Install the .NET 10 SDK (minimum 10.0.100; `global.json` permits newer 10.0 feat
 dotnet restore DiskBurrow.slnx --locked-mode
 dotnet build DiskBurrow.slnx -c Release --no-restore
 dotnet test tests/DiskBurrow.Tests -c Release --no-restore
-./scripts/publish.ps1 -Version 0.1.1 -OutputDirectory ./artifacts/release-0.1.1
+./scripts/publish.ps1 -Version 0.2.0 -OutputDirectory ./artifacts/release-0.2.0
 ```
 
-The output directory must be **new**; the publisher never removes/reuses an existing folder. It restores locked dependencies, pins both bundled frameworks to 10.0.12, publishes self-contained win-x64 and zips only the MSBuild publish manifest plus LICENSE/instructions/package manifest. Debug symbols, local scans, reports and tests are excluded; shipped bytes are checked for local source paths. Package tests build an independent fixture package in ignored `work/` and validate manifest/checksum/privacy. NuGet runtime packs require network access during the first build; ordinary app use does not.
+The output directory must be **new**; the publisher never removes/reuses an existing folder. It restores locked dependencies, pins both bundled frameworks to 10.0.12, publishes self-contained win-x64 and zips only the MSBuild publish manifest plus LICENSE/third-party notices/instructions/package manifest. Debug symbols, local scans, reports and tests are excluded; shipped bytes are checked for local source paths. Package tests build an independent fixture package in ignored `work/` and validate manifest/checksum/privacy. NuGet runtime packs require network access during the first build; ordinary app use does not.
 
-Windows CI repeats locked restore, Release build/tests and packaging; branch runs upload artifacts, version-tag runs attach ZIP/checksum to a GitHub Release. **Hosted CI/release download verification is pending external publication.** See [actual evidence and manual checks](docs/verification.md). Programmatic WPF/SQLite/runtime checks do not prove visual layout, tray clicks, dialogs, actual OS shutdown or the real cleanup/autostart click flows. Normal Exit drains; OS-forced termination after the bounded session-ending wait may prevent the last journal write. Only owned fixtures may be used for destructive verification.
+Windows CI repeats locked restore, Release build/tests and packaging; branch runs upload artifacts, version-tag runs attach ZIP/checksum to a GitHub Release. Release verification status is recorded with its version below. See [actual evidence and manual checks](docs/verification.md). Programmatic WPF/SQLite/runtime checks do not prove visual layout, tray clicks, dialogs, actual OS shutdown or the real cleanup/autostart click flows. Normal Exit drains; OS-forced termination after the bounded session-ending wait may prevent the last journal write. Only owned fixtures may be used for destructive verification.
 
 MIT © 2026 DinLemon. Runtime/dependency components retain their upstream licenses.

@@ -17,8 +17,9 @@ public partial class App : Application
         {
             if(e.Args.Length>0)
             {
-                if(e.Args.Length!=2||e.Args[0]!="--verify-runtime"){Shutdown(2);return;}
-                Shutdown(await RuntimeVerifier.RunAsync(e.Args[1],Dispatcher));return;
+                if(e.Args[0]=="--mft-scan"){Shutdown(await MftHelperHost.RunAsync(e.Args));return;}
+                var verify=RuntimeVerifier.ParseArguments(e.Args);
+                Shutdown(await RuntimeVerifier.RunAsync(verify.Workspace,Dispatcher,verify.MftRoot));return;
             }
             instance=new("DiskBurrow",()=>Dispatcher.InvokeAsync(()=>window?.ActivateWindow()));
             if(!await instance.TryBecomePrimaryAsync()){await instance.DisposeAsync();instance=null;Shutdown();return;}

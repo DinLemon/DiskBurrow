@@ -19,6 +19,28 @@ public class PresentationTests
     private static CleanupViewModel Vm(Executor executor, IHistoryStore? history = null) => new(new Planner(Plan()), executor, history, new InlineDispatcher());
 
     [Fact] public async Task NoCandidateIsInitiallySelected() { var vm = Vm(new()); await vm.AnalyzeAsync(default); Assert.Empty(vm.SelectedIds); Assert.False(vm.CanExecuteCleanup); Assert.Single(vm.VisibleCandidates); }
+    [Fact] public async Task CleanupCoverageShowsAllFourRulesAndEmptyOrWarningCategories()
+    {
+        var plan=Plan() with {Warnings=[new("ChromeCache",@"C:\fixture\Chrome","Cleanup.OwnerRunning")]};
+        var vm=new CleanupViewModel(new Planner(plan),new Executor(),null,new InlineDispatcher());await vm.AnalyzeAsync(default);
+        Assert.Equal(new[]{"All","UserTemp","CrashDumps","ChromeCache","EdgeCache"},vm.Categories);
+        Assert.Equal(4,vm.CategorySummaries.Count);
+        Assert.Equal(1,vm.CategorySummaries.Single(s=>s.RuleId=="UserTemp").Count);
+        Assert.Equal(10,vm.CategorySummaries.Single(s=>s.RuleId=="UserTemp").LogicalBytes);
+        Assert.Equal("Cleanup.NoEligible",vm.CategorySummaries.Single(s=>s.RuleId=="CrashDumps").StatusKey);
+        Assert.Equal("Cleanup.HasWarnings",vm.CategorySummaries.Single(s=>s.RuleId=="ChromeCache").StatusKey);
+        Assert.Equal(new[]{"Cleanup.OwnerRunning"},vm.CategorySummaries.Single(s=>s.RuleId=="ChromeCache").WarningKeys);
+        vm.Select(plan.Candidates[0].Id,true);await vm.FilterAsync("absent","ChromeCache");
+        Assert.Equal(1,vm.CategorySummaries.Single(s=>s.RuleId=="UserTemp").Count);Assert.Single(vm.SelectedIds);
+    }
+    [Fact] public async Task CategorySummaryCountsEntireAnalyzedPlanBeyondVisibleLimit()
+    {
+        var original=Plan();var candidate=original.Candidates[0];
+        var plan=original with {Candidates=Enumerable.Range(0,2005).Select(_=>candidate with {Id=Guid.NewGuid()}).ToArray()};
+        var vm=new CleanupViewModel(new Planner(plan),new Executor(),null,new InlineDispatcher());await vm.AnalyzeAsync(default);
+        Assert.Equal(2000,vm.VisibleCandidates.Count);Assert.Equal(2005,vm.CategorySummaries.Single(s=>s.RuleId=="UserTemp").Count);
+        Assert.Equal(20050,vm.CategorySummaries.Single(s=>s.RuleId=="UserTemp").LogicalBytes);
+    }
     [Fact] public async Task ExecuteRequiresSelectionAndPermanentDeletionConfirmation() { var e = new Executor(); var vm = Vm(e); await vm.AnalyzeAsync(default); await vm.ExecuteSelectedAsync(true, default); vm.Select(vm.VisibleCandidates[0].Id, true); await vm.ExecuteSelectedAsync(false, default); Assert.Equal(0, e.InvocationCount); await vm.ExecuteSelectedAsync(true, default); Assert.Equal(1, e.InvocationCount); }
     [Fact] public async Task SelectionSurvivesFiltering() { var vm = Vm(new()); await vm.AnalyzeAsync(default); var id = vm.VisibleCandidates[0].Id; vm.Select(id, true); await vm.FilterAsync("absent", null); Assert.Empty(vm.VisibleCandidates); Assert.Contains(id, vm.SelectedIds); }
     [Fact] public async Task CategoryExclusionClearsSelection() { var vm = Vm(new()); await vm.AnalyzeAsync(default); var id = vm.VisibleCandidates[0].Id; vm.Select(id, true); vm.ExcludeCategory("UserTemp"); Assert.Empty(vm.SelectedIds); Assert.False(vm.CanExecuteCleanup); }
@@ -32,6 +54,19 @@ public class PresentationTests
     [Fact] public async Task SettingsAutostartRequiresExplicitSave() { using var tree=new TempTree();var registry=new FakeRun();var vm=new SettingsViewModel(new(),new SettingsStore(tree.Root),new AutostartRegistration(registry,@"C:\fixture\DiskBurrow.exe"),p=>null,s=>{});vm.Autostart=true;Assert.Equal(0,registry.Writes);await vm.SaveAsync(default);Assert.Equal(1,registry.Writes);Assert.True((await new SettingsStore(tree.Root).LoadAsync(default)).Autostart); }
     [Fact] public async Task UnapprovedCustomTempCannotBeSaved() { using var tree=new TempTree();var registry=new FakeRun();var vm=new SettingsViewModel(new(),new SettingsStore(tree.Root),new AutostartRegistration(registry,@"C:\fixture\DiskBurrow.exe"),p=>null,s=>{});vm.CustomTemp=@"C:\unapproved";await Assert.ThrowsAsync<ArgumentException>(()=>vm.SaveAsync(default));Assert.Equal(0,registry.Writes);Assert.False(File.Exists(Path.Combine(tree.Root,"settings.json"))); }
     [Fact] public void RuntimeVerificationRequiresOwnedWorkspace() { using var tree=new TempTree();Assert.Throws<ArgumentException>(()=>RuntimeVerifier.ValidateWorkspace("relative"));Assert.Throws<ArgumentException>(()=>RuntimeVerifier.ValidateWorkspace(tree.Root));File.WriteAllText(Path.Combine(tree.Root,RuntimeVerifier.MarkerName),RuntimeVerifier.MarkerText);Assert.Equal(Path.TrimEndingDirectorySeparator(tree.Root),RuntimeVerifier.ValidateWorkspace(tree.Root)); }
+    [Fact] public void RuntimeVerificationAcceptsOnlyExplicitWholeDriveProbeArguments()
+    {
+        Assert.Null(RuntimeVerifier.ParseArguments(["--verify-runtime",@"E:\owned\work\probe"]).MftRoot);
+        Assert.Equal(@"C:\",RuntimeVerifier.ParseArguments(["--verify-runtime",@"E:\owned\work\probe","--mft-root",@"C:\"]).MftRoot);
+        foreach(var args in new[]{new[]{"--verify-runtime","workspace","--mft-root",@"C:\folder"},new[]{"--verify-runtime","workspace","--mft-root",@"\\server\share"},new[]{"--verify-runtime","workspace","--run",@"C:\"},new[]{"--verify-runtime","workspace","--mft-root"},new[]{"--unknown","workspace"}})
+            Assert.Throws<ArgumentException>(()=>RuntimeVerifier.ParseArguments(args));
+    }
+    [Fact] public async Task InvalidMftProbeRootCreatesNoRuntimeRunAndDoesNotLaunchHelper()
+    {
+        using var tree=new TempTree();File.WriteAllText(Path.Combine(tree.Root,RuntimeVerifier.MarkerName),RuntimeVerifier.MarkerText);
+        await Assert.ThrowsAsync<ArgumentException>(()=>RuntimeVerifier.RunAsync(tree.Root,System.Windows.Threading.Dispatcher.CurrentDispatcher,@"C:\folder"));
+        Assert.Empty(Directory.GetDirectories(tree.Root));
+    }
     [Fact] public async Task CancelledExportLeavesNoPartialReport() { using var tree=new TempTree();var path=Path.Combine(tree.Root,"cancelled.json");using var stop=new CancellationTokenSource();stop.Cancel();await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>new ReportExporter().ExportAsync(Snapshot,path,true,stop.Token));Assert.False(File.Exists(path));Assert.Empty(Directory.GetFiles(tree.Root)); }
     [Fact] public async Task ExportNeverOverwritesExistingReport() { using var tree=new TempTree();var path=tree.FileAt("existing.json",3);await Assert.ThrowsAsync<IOException>(()=>new ReportExporter().ExportAsync(Snapshot,path,true,default));Assert.Equal(3,new FileInfo(path).Length); }
     [Fact] public async Task RealStorageBudgetFailureIsVisibleAsSeparateJournalDiagnostic() { using var tree=new TempTree();var store=new SqliteHistoryStore(new StorageBudget(tree.Root,1024,0));var executor=new Executor();var vm=new CleanupViewModel(new Planner(Plan()),executor,store,new InlineDispatcher(),()=>store.LastUserMessage);await vm.AnalyzeAsync(default);vm.Select(vm.VisibleCandidates[0].Id,true);await vm.ExecuteSelectedAsync(true,default);Assert.NotNull(vm.Report);Assert.NotNull(vm.JournalError);Assert.Equal(1,executor.InvocationCount);Assert.False(vm.CanExecuteCleanup); }

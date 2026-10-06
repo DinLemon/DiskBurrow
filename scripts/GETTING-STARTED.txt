@@ -6,9 +6,9 @@ This build is unsigned. Check the SHA-256 against the release checksum.
 Closing the window hides it to the tray; use tray Exit to stop monitoring.
 Russian is the default language; select English in Settings.
 Autostart is off until you explicitly enable it and save Settings.
-Cleanup permanently deletes only explicitly selected preview candidates.
+Cleanup and manual folder/file deletion permanently delete explicitly reviewed selections after separate confirmation.
 Review paths, age, exclusions and confirmation carefully. There is no undo.
-Do not run elevated. User history/settings are outside this application folder.
+Run the main app as an ordinary user. Only the optional read-only fast NTFS helper requests UAC. User history/settings are outside this application folder.
 Read the complete rules, limitations and verification status:
 https://github.com/DinLemon/DiskBurrow
 https://github.com/DinLemon/DiskBurrow/releases
@@ -16,5 +16,5 @@ https://github.com/DinLemon/DiskBurrow/releases
 Распакуйте ZIP целиком и запустите DiskBurrow.exe. .NET включён в пакет.
 Закрытие окна оставляет приложение в трее; для остановки выберите Выход.
 Автозапуск выключен до явного сохранения настройки.
-Очистка безвозвратно удаляет только выбранные файлы после подтверждения.
-Проверьте пути и исключения. Отмены удаления нет. Повышение прав не нужно.
+Очистка и ручное удаление папок/файлов безвозвратны: нужен просмотр выбора и отдельное подтверждение.
+Проверьте пути и исключения. Отмены удаления нет. Основное окно работает обычным пользователем; отдельный процесс быстрого NTFS-скана запрашивает UAC и только читает метаданные.

@@ -45,7 +45,7 @@ public sealed class PackageTests
         using var zip = ZipFile.OpenRead(Archive);
         var entries = zip.Entries.Select(e => e.FullName).Order(StringComparer.Ordinal).ToArray();
         var published = File.ReadAllLines(Path.Combine(Package.Value, "publish-outputs.txt"));
-        Assert.Equal(published.Concat(["LICENSE", "GETTING-STARTED.txt", "PACKAGE-MANIFEST.json"]).Order(StringComparer.Ordinal), entries);
+        Assert.Equal(published.Concat(["LICENSE", "THIRD_PARTY_NOTICES.txt", "GETTING-STARTED.txt", "PACKAGE-MANIFEST.json"]).Order(StringComparer.Ordinal), entries);
         Assert.Contains("DiskBurrow.exe", entries);
         Assert.Contains("coreclr.dll", entries);
         Assert.Contains("hostpolicy.dll", entries);
@@ -55,6 +55,12 @@ public sealed class PackageTests
         using var manifest = JsonDocument.Parse(zip.GetEntry("PACKAGE-MANIFEST.json")!.Open());
         Assert.Equal("10.0.12", manifest.RootElement.GetProperty("runtimeVersion").GetString());
         Assert.Equal(published.Order(StringComparer.Ordinal), manifest.RootElement.GetProperty("publishedFiles").EnumerateArray().Select(e => e.GetString()!).Order(StringComparer.Ordinal));
+        using var notices = new StreamReader(zip.GetEntry("THIRD_PARTY_NOTICES.txt")!.Open());
+        var noticeText = notices.ReadToEnd();
+        Assert.Contains("https://github.com/tobi/disktree", noticeText);
+        Assert.Contains("Copyright (c) 2026 Tobi Lütke", noticeText);
+        Assert.Contains("Permission is hereby granted, free of charge", noticeText);
+        Assert.Contains("THE SOFTWARE IS PROVIDED", noticeText);
     }
     [Fact]
     public void PackageExcludesLocalHistoryReportsAndTestTrees()

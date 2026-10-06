@@ -44,8 +44,9 @@ foreach ($framework in @('Microsoft.NETCore.App','Microsoft.WindowsDesktop.App')
     $included = @($runtime.runtimeOptions.includedFrameworks | Where-Object name -EQ $framework)
     if ($included.Count -ne 1 -or $included[0].version -ne '10.0.12') { throw "Bundled framework version mismatch: $framework" }
 }
-$supplemental = @('LICENSE', 'GETTING-STARTED.txt', 'PACKAGE-MANIFEST.json')
+$supplemental = @('LICENSE', 'THIRD_PARTY_NOTICES.txt', 'GETTING-STARTED.txt', 'PACKAGE-MANIFEST.json')
 Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination (Join-Path $publish 'LICENSE')
+Copy-Item -LiteralPath (Join-Path $repo 'THIRD_PARTY_NOTICES.txt') -Destination (Join-Path $publish 'THIRD_PARTY_NOTICES.txt')
 Copy-Item -LiteralPath (Join-Path $repo 'scripts/GETTING-STARTED.txt') -Destination (Join-Path $publish 'GETTING-STARTED.txt')
 @{ version = $Version; runtimeVersion = '10.0.12'; rid = 'win-x64'; repositoryUrl = 'https://github.com/DinLemon/DiskBurrow'; publishedFiles = $files; supplementalFiles = $supplemental } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $publish 'PACKAGE-MANIFEST.json') -Encoding utf8NoBOM
 $files | Set-Content -LiteralPath (Join-Path $output 'publish-outputs.txt') -Encoding utf8NoBOM

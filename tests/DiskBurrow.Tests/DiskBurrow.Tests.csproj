@@ -3,6 +3,8 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <IsTestProject>true</IsTestProject>
     <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <StartupObject>DiskBurrow.Tests.WpfProbeProgram</StartupObject>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/DiskBurrow.App/DiskBurrow.App.csproj" />
