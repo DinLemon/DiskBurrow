@@ -5,9 +5,10 @@ public sealed record AppSettings
     public int IntervalHours { get; set; } = 6;
     public TimeSpan InitialDelay { get; set; } = TimeSpan.FromMinutes(5);
     public TimeSpan FreeSpaceInterval { get; set; } = TimeSpan.FromMinutes(5);
-    public long LowSpaceBytes { get; set; } = 15L * 1024 * 1024 * 1024;
-    public long GrowthBytes { get; set; } = 5L * 1024 * 1024 * 1024;
+    public long LowSpaceBytes { get; set; } = 15_000_000_000;
+    public long GrowthBytes { get; set; } = 5_000_000_000;
     public string Language { get; set; } = "ru";
+    public string Theme { get; set; } = "light";
     public string[] ExcludedPaths { get; set; } = [];
     public bool Paused { get; set; }
     public bool AllowOnBattery { get; set; }
@@ -17,7 +18,7 @@ public sealed record AppSettings
     {
         if (IntervalHours is not (1 or 6 or 12 or 24) || LowSpaceBytes < 0 || GrowthBytes <= 0 ||
             InitialDelay != TimeSpan.FromMinutes(5) || FreeSpaceInterval != TimeSpan.FromMinutes(5) ||
-            Language is not ("ru" or "en") || ExcludedPaths is null ||
+            Language is not ("ru" or "en") || Theme is not ("light" or "dark") || ExcludedPaths is null ||
             ExcludedPaths.Any(p => string.IsNullOrWhiteSpace(p) || !Path.IsPathFullyQualified(p)) ||
             (ApprovedCustomTempPath is not null && (string.IsNullOrWhiteSpace(ApprovedCustomTempPath) ||
                 !Path.IsPathFullyQualified(ApprovedCustomTempPath))))

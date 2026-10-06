@@ -115,8 +115,11 @@
   <sys:String x:Key="Issue.ChangedDuringScan">Changed during scan</sys:String>
   <sys:String x:Key="Issue.IoFailure">Read failure</sys:String>
   <sys:String x:Key="Settings.Interval">Full scan interval, hours</sys:String>
-  <sys:String x:Key="Settings.Low">Warn below, GiB</sys:String>
-  <sys:String x:Key="Settings.Growth">Warn about growth from, GiB</sys:String>
+  <sys:String x:Key="Settings.Low">Warn below, GB</sys:String>
+  <sys:String x:Key="Settings.Growth">Warn about growth from, GB</sys:String>
+  <sys:String x:Key="Settings.Theme">Appearance</sys:String>
+  <sys:String x:Key="Theme.Light">Light</sys:String>
+  <sys:String x:Key="Theme.Dark">Dark</sys:String>
   <sys:String x:Key="Settings.Battery">Allow full scans on battery</sys:String>
   <sys:String x:Key="Settings.Language">Interface language</sys:String>
   <sys:String x:Key="Settings.Exclusions">Cleanup exclusions: one absolute path per line</sys:String>
@@ -152,7 +155,7 @@
   <sys:String x:Key="Cleanup.NoEligible">No eligible files; see eligibility rules and warnings.</sys:String>
   <sys:String x:Key="Cleanup.Scope">Preview covers user temporary files older than 7 days, crash dumps (.dmp) older than 7 days, and HTTP caches of closed Chrome and Edge browsers. Counts refer to the analyzed preview before filters and exclusions. Other application data is not treated as junk.</sys:String>
   <sys:String x:Key="Cleanup.Warnings">Skipped locations and unavailable categories</sys:String>
-  <sys:String x:Key="Issue.Count">Skipped/error count</sys:String>
+  <sys:String x:Key="Issue.Count">Count</sys:String>
   <sys:String x:Key="Manual.Analyze">Review marked folders and files</sys:String>
   <sys:String x:Key="Manual.Delete">Delete reviewed selection permanently</sys:String>
   <sys:String x:Key="Manual.Review">Review manual deletion</sys:String>

@@ -1,16 +1,134 @@
-<UserControl x:Class="DiskBurrow.App.Views.OverviewView" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel Margin="24">
-    <TextBlock Text="{DynamicResource Nav.Overview}" Style="{StaticResource Title}"/><TextBlock Text="{DynamicResource Empty}" Style="{StaticResource Note}" Visibility="{Binding HasNoScan,Converter={StaticResource BoolVisibility}}"/>
-    <TextBlock Text="{DynamicResource Overview.Volume}" Style="{StaticResource Section}"/>
-    <UniformGrid Columns="3"><StackPanel><TextBlock Text="{DynamicResource Overview.Used}"/><TextBlock Text="{Binding Used}" Style="{StaticResource Value}"/></StackPanel><StackPanel><TextBlock Text="{DynamicResource Overview.Free}"/><TextBlock Text="{Binding Free}" Style="{StaticResource Value}"/></StackPanel><StackPanel><TextBlock Text="{DynamicResource Overview.Total}"/><TextBlock Text="{Binding Total}" Style="{StaticResource Value}"/></StackPanel></UniformGrid>
-    <TextBlock Text="{DynamicResource Overview.CountersObserved}" Style="{StaticResource Note}"/><TextBlock Text="{Binding Overview.VisibleRoot}"/><TextBlock Text="{Binding Overview.VolumeObservedUtc}"/>
-    <ProgressBar Value="{Binding Overview.UsedPercent,Mode=OneWay}" Maximum="100" Height="12" Foreground="{StaticResource Accent}"/>
-    <TextBlock Text="{DynamicResource Overview.Checked}" Style="{StaticResource Section}"/><TextBox Text="{Binding Overview.Snapshot.CompletedUtc,Mode=OneWay}" Style="{StaticResource PathText}"/><TextBox Text="{Binding Overview.Snapshot.Root,Mode=OneWay}" Style="{StaticResource PathText}"/>
-    <UniformGrid Columns="2"><StackPanel><TextBlock Text="{DynamicResource Overview.Logical}"/><TextBlock Text="{Binding Logical}" Style="{StaticResource Value}"/></StackPanel><StackPanel><TextBlock Text="{DynamicResource Overview.Allocated}"/><TextBlock Text="{Binding Allocated}" Style="{StaticResource Value}"/></StackPanel></UniformGrid>
-    <TextBlock Text="{Binding Coverage}" Foreground="#9B6500"/><TextBlock Text="{DynamicResource Overview.Explanation}" Style="{StaticResource Note}"/>
-    <DataGrid ItemsSource="{Binding Overview.IssueCounts}" Height="180"><DataGrid.Columns><DataGridTemplateColumn Width="*"><DataGridTemplateColumn.Header><TextBlock Text="{DynamicResource Reason}" TextWrapping="NoWrap"/></DataGridTemplateColumn.Header><DataGridTemplateColumn.CellTemplate><DataTemplate><TextBlock Margin="8,4"><TextBlock.Text><MultiBinding Converter="{StaticResource LocalValue}" ConverterParameter="Issue."><Binding Path="Kind"/><Binding Path="DataContext.Language" RelativeSource="{RelativeSource AncestorType=Window}"/></MultiBinding></TextBlock.Text></TextBlock></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn><DataGridTextColumn Binding="{Binding Count}" Width="150"><DataGridTextColumn.Header><TextBlock Text="{DynamicResource Issue.Count}" TextWrapping="Wrap"/></DataGridTextColumn.Header></DataGridTextColumn></DataGrid.Columns></DataGrid>
-    <TextBlock Text="{DynamicResource Recommend.Text}" Style="{StaticResource Note}"/><WrapPanel><Button Tag="Storage" Content="{DynamicResource Action.Storage}"/><Button Tag="Chrome" Content="{DynamicResource Recommend.Chrome}"/><Button Tag="Edge" Content="{DynamicResource Recommend.Edge}"/></WrapPanel>
-    <TextBlock Text="{DynamicResource Recommend.Observed}" Style="{StaticResource Section}"/><TextBlock Text="{DynamicResource Recommend.Limit}" Style="{StaticResource Note}"/>
-    <DataGrid Height="120" ItemsSource="{Binding CacheRecommendations}"><DataGrid.Columns><DataGridTextColumn Binding="{Binding Program}" Width="90"><DataGridTextColumn.Header><TextBlock Text="{DynamicResource Category}" TextWrapping="NoWrap"/></DataGridTextColumn.Header></DataGridTextColumn><DataGridTextColumn Binding="{Binding Path}" Width="*"><DataGridTextColumn.Header><TextBlock Text="{DynamicResource Path}" TextWrapping="NoWrap"/></DataGridTextColumn.Header></DataGridTextColumn><DataGridTextColumn Binding="{Binding LogicalBytes,Converter={StaticResource Bytes}}" Width="95"><DataGridTextColumn.Header><TextBlock Text="{DynamicResource Logical}" TextWrapping="NoWrap"/></DataGridTextColumn.Header></DataGridTextColumn><DataGridTemplateColumn Width="110"><DataGridTemplateColumn.CellTemplate><DataTemplate><Button Tag="Recommendation" Content="{DynamicResource Action.Instructions}"/></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn></DataGrid.Columns></DataGrid>
-  </StackPanel></ScrollViewer>
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="DiskBurrow.App.Views.OverviewView">
+ <ScrollViewer VerticalScrollBarVisibility="Auto">
+  <StackPanel Margin="12">
+   <TextBlock Text="{DynamicResource Nav.Overview}" Style="{StaticResource Title}" />
+   <TextBlock Text="{DynamicResource Empty}" Style="{StaticResource Note}" Visibility="{Binding HasNoScan,Converter={StaticResource BoolVisibility}}" />
+   <TextBlock Text="{DynamicResource Overview.Volume}" Style="{StaticResource Section}" />
+   <UniformGrid Columns="3">
+    <StackPanel>
+     <TextBlock Text="{DynamicResource Overview.Used}" />
+     <TextBlock Text="{Binding Used}" Style="{StaticResource Value}" />
+    </StackPanel>
+    <StackPanel>
+     <TextBlock Text="{DynamicResource Overview.Free}" />
+     <TextBlock Text="{Binding Free}" Style="{StaticResource Value}" />
+    </StackPanel>
+    <StackPanel>
+     <TextBlock Text="{DynamicResource Overview.Total}" />
+     <TextBlock Text="{Binding Total}" Style="{StaticResource Value}" />
+    </StackPanel>
+   </UniformGrid>
+   <TextBlock Text="{DynamicResource Overview.CountersObserved}" Style="{StaticResource Note}" />
+   <TextBlock Text="{Binding Overview.VisibleRoot}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" ToolTip="{Binding Overview.VisibleRoot}" />
+   <TextBlock Text="{Binding Overview.VolumeObservedUtc}" />
+   <ProgressBar Value="{Binding Overview.UsedPercent,Mode=OneWay}" Maximum="100" Height="12" Foreground="{DynamicResource AccentBrush}" />
+   <TextBlock Text="{DynamicResource Overview.Checked}" Style="{StaticResource Section}" />
+   <TextBox Text="{Binding Overview.Snapshot.CompletedUtc,Mode=OneWay}" Style="{StaticResource PathText}" />
+   <TextBox Text="{Binding Overview.Snapshot.Root,Mode=OneWay}" Style="{StaticResource PathText}" />
+   <UniformGrid Columns="2">
+    <StackPanel>
+     <TextBlock Text="{DynamicResource Overview.Logical}" />
+     <TextBlock Text="{Binding Logical}" Style="{StaticResource Value}" />
+    </StackPanel>
+    <StackPanel>
+     <TextBlock Text="{DynamicResource Overview.Allocated}" />
+     <TextBlock Text="{Binding Allocated}" Style="{StaticResource Value}" />
+    </StackPanel>
+   </UniformGrid>
+   <TextBlock Text="{Binding Coverage}" Foreground="{DynamicResource WarningBrush}" />
+   <TextBlock Text="{DynamicResource Overview.Explanation}" Style="{StaticResource Note}" />
+   <DataGrid ItemsSource="{Binding Overview.IssueCounts}" Height="180">
+    <DataGrid.Columns>
+     <DataGridTemplateColumn Width="*">
+      <DataGridTemplateColumn.Header>
+       <TextBlock Text="{DynamicResource Reason}" TextWrapping="NoWrap" />
+      </DataGridTemplateColumn.Header>
+      <DataGridTemplateColumn.CellTemplate>
+       <DataTemplate>
+        <TextBlock Margin="8,4">
+         <TextBlock.Text>
+          <MultiBinding Converter="{StaticResource LocalValue}" ConverterParameter="Issue.">
+           <Binding Path="Kind" />
+           <Binding Path="DataContext.Language" RelativeSource="{RelativeSource AncestorType=Window}" />
+          </MultiBinding>
+         </TextBlock.Text>
+        </TextBlock>
+       </DataTemplate>
+      </DataGridTemplateColumn.CellTemplate>
+     </DataGridTemplateColumn>
+     <DataGridTextColumn Binding="{Binding Count}" Width="Auto" MinWidth="88" MaxWidth="120">
+      <DataGridTextColumn.Header>
+       <TextBlock Text="{DynamicResource Issue.Count}" TextWrapping="Wrap" />
+      </DataGridTextColumn.Header>
+      <DataGridTextColumn.ElementStyle>
+       <Style TargetType="TextBlock">
+        <Setter Property="TextWrapping" Value="NoWrap" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        <Setter Property="ToolTip" Value="{Binding Count}" />
+        <Setter Property="Margin" Value="4,0" />
+       </Style>
+      </DataGridTextColumn.ElementStyle>
+     </DataGridTextColumn>
+    </DataGrid.Columns>
+   </DataGrid>
+   <TextBlock Text="{DynamicResource Recommend.Text}" Style="{StaticResource Note}" />
+   <WrapPanel>
+    <Button Tag="Storage" Content="{DynamicResource Action.Storage}" />
+    <Button Tag="Chrome" Content="{DynamicResource Recommend.Chrome}" />
+    <Button Tag="Edge" Content="{DynamicResource Recommend.Edge}" />
+   </WrapPanel>
+   <TextBlock Text="{DynamicResource Recommend.Observed}" Style="{StaticResource Section}" />
+   <TextBlock Text="{DynamicResource Recommend.Limit}" Style="{StaticResource Note}" />
+   <DataGrid Height="120" ItemsSource="{Binding CacheRecommendations}">
+    <DataGrid.Columns>
+     <DataGridTextColumn Binding="{Binding Program}" Width="Auto" MinWidth="76" MaxWidth="96">
+      <DataGridTextColumn.Header>
+       <TextBlock Text="{DynamicResource Category}" TextWrapping="NoWrap" />
+      </DataGridTextColumn.Header>
+      <DataGridTextColumn.ElementStyle>
+       <Style TargetType="TextBlock">
+        <Setter Property="TextWrapping" Value="NoWrap" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        <Setter Property="ToolTip" Value="{Binding Program}" />
+        <Setter Property="Margin" Value="4,0" />
+       </Style>
+      </DataGridTextColumn.ElementStyle>
+     </DataGridTextColumn>
+     <DataGridTextColumn Binding="{Binding Path}" Width="*">
+      <DataGridTextColumn.Header>
+       <TextBlock Text="{DynamicResource Path}" TextWrapping="NoWrap" />
+      </DataGridTextColumn.Header>
+      <DataGridTextColumn.ElementStyle>
+       <Style TargetType="TextBlock">
+        <Setter Property="TextWrapping" Value="NoWrap" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        <Setter Property="ToolTip" Value="{Binding Path}" />
+        <Setter Property="Margin" Value="4,0" />
+       </Style>
+      </DataGridTextColumn.ElementStyle>
+     </DataGridTextColumn>
+     <DataGridTextColumn Binding="{Binding LogicalBytes,Converter={StaticResource Bytes}}" Width="Auto" MinWidth="78" MaxWidth="100">
+      <DataGridTextColumn.Header>
+       <TextBlock Text="{DynamicResource Logical}" TextWrapping="NoWrap" />
+      </DataGridTextColumn.Header>
+      <DataGridTextColumn.ElementStyle>
+       <Style TargetType="TextBlock">
+        <Setter Property="TextWrapping" Value="NoWrap" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        <Setter Property="ToolTip" Value="{Binding LogicalBytes,Converter={StaticResource Bytes}}" />
+        <Setter Property="Margin" Value="4,0" />
+       </Style>
+      </DataGridTextColumn.ElementStyle>
+     </DataGridTextColumn>
+     <DataGridTemplateColumn Width="Auto" MinWidth="88" MaxWidth="125">
+      <DataGridTemplateColumn.CellTemplate>
+       <DataTemplate>
+        <Button Tag="Recommendation" Content="{DynamicResource Action.Instructions}" />
+       </DataTemplate>
+      </DataGridTemplateColumn.CellTemplate>
+     </DataGridTemplateColumn>
+    </DataGrid.Columns>
+   </DataGrid>
+  </StackPanel>
+ </ScrollViewer>
 </UserControl>

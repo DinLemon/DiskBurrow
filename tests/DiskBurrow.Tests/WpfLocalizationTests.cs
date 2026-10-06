@@ -32,6 +32,20 @@ internal static class WpfProbeProgram
     [STAThread]
     private static int Main(string[] args)
     {
+        if(args is ["--verify-background-snapshot",var page])
+        {
+            try
+            {
+                var app=new Application{ShutdownMode=ShutdownMode.OnExplicitShutdown};
+                app.Resources.MergedDictionaries.Add(new(){Source=new Uri("/DiskBurrow;component/Resources/Styles.xaml",UriKind.Relative)});
+                SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
+                var task=BackgroundSnapshotTests.VerifyAsync(page);var frame=new DispatcherFrame();
+                _=task.ContinueWith(_=>app.Dispatcher.BeginInvoke(()=>frame.Continue=false),TaskScheduler.Default);
+                Dispatcher.PushFrame(frame);task.GetAwaiter().GetResult();app.Shutdown();return 0;
+            }
+            catch(Exception error){Console.Error.WriteLine(error);return 1;}
+        }
+        if(args is ["--verify-theme-views"]){try{ThemeVisualProbe.Run();return 0;}catch(Exception error){Console.Error.WriteLine(error);return 1;}}
         if(args is ["--verify-live-manual-report"])
         {
             try
@@ -150,9 +164,9 @@ internal static class WpfProbeProgram
         public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
         public ProbeSettings Settings {get;}=new();public string Filter {get;set;}="";public string Category {get;set;}="All";
         public object Cleanup {get;}=new {Categories=new[]{"All","UserTemp","CrashDumps","ChromeCache","EdgeCache"},CanExecuteCleanup=false,UnattemptedCount=0};
-        public object[] CleanupCategorySummaries=>new[]{new {Category=LocalizationService.ReadText(Language,"UserTemp"),Size="1 · 0.01 GiB",Status=LocalizationService.ReadText(Language,"Cleanup.Eligible"),Warnings=""},new {Category=LocalizationService.ReadText(Language,"CrashDumps"),Size="0 · 0.00 GiB",Status=LocalizationService.ReadText(Language,"Cleanup.NoEligible"),Warnings=""},new {Category=LocalizationService.ReadText(Language,"ChromeCache"),Size="0 · 0.00 GiB",Status=LocalizationService.ReadText(Language,"Cleanup.HasWarnings"),Warnings=LocalizationService.ReadText(Language,"Cleanup.OwnerRunning")},new {Category=LocalizationService.ReadText(Language,"EdgeCache"),Size="1 · 0.01 GiB",Status=LocalizationService.ReadText(Language,"Cleanup.Eligible"),Warnings=""}};
+        public object[] CleanupCategorySummaries=>new[]{new {Category=LocalizationService.ReadText(Language,"UserTemp"),Size="1 · 0.01 GB",Status=LocalizationService.ReadText(Language,"Cleanup.Eligible"),Warnings=""},new {Category=LocalizationService.ReadText(Language,"CrashDumps"),Size="0 · 0.00 GB",Status=LocalizationService.ReadText(Language,"Cleanup.NoEligible"),Warnings=""},new {Category=LocalizationService.ReadText(Language,"ChromeCache"),Size="0 · 0.00 GB",Status=LocalizationService.ReadText(Language,"Cleanup.HasWarnings"),Warnings=LocalizationService.ReadText(Language,"Cleanup.OwnerRunning")},new {Category=LocalizationService.ReadText(Language,"EdgeCache"),Size="1 · 0.01 GB",Status=LocalizationService.ReadText(Language,"Cleanup.Eligible"),Warnings=""}};
     }
-    private sealed class ProbeSettings {public int[] Intervals=>[1,6,12,24];public int IntervalHours {get;set;}=6;public int LowGiB {get;set;}=15;public int GrowthGiB {get;set;}=5;public string[] Languages=>["ru","en"];public bool AllowOnBattery {get;set;}public bool Autostart {get;set;}public string Exclusions {get;set;}="";public string CustomTemp {get;set;}="";}
+    private sealed class ProbeSettings {public int[] Intervals=>[1,6,12,24];public int IntervalHours {get;set;}=6;public int LowGB {get;set;}=15;public int GrowthGB {get;set;}=5;public string[] Languages=>["ru","en"];public bool AllowOnBattery {get;set;}public bool Autostart {get;set;}public string Exclusions {get;set;}="";public string CustomTemp {get;set;}="";}
     private sealed class ProbeRow {public string Path {get;}=@"E:\owned-fixture\row";public long Bytes=>12;public long LogicalBytes=>12;public long AllocatedBytes=>12;public bool CoverageComplete=>true;public bool Selected {get;set;}=true;public int Count=>1;public string Category=>"fixture";public string Reason=>"fixture";public DateTimeOffset Modified=>DateTimeOffset.UnixEpoch;public string Outcome=>"fixture";public string Root=>@"E:\owned-fixture";public DateTimeOffset CompletedUtc=>DateTimeOffset.UnixEpoch;public string Kind=>"AccessDenied";public string Program=>"fixture";}
     private static void Require(bool condition,string message){if(!condition)throw new InvalidOperationException(message);}
 }

@@ -27,7 +27,7 @@ public sealed class AppRuntime : IAsyncDisposable
     }
     private AppRuntime(string dataDirectory,AppSettings settings,SettingsStore store,SqliteHistoryStore history,Dispatcher dispatcher,IRunRegistry registry,string? startup,IMonitoringEnvironment environment,IDiskScanner scanner)
     {
-        this.environment=environment;this.settings=settings;History=history;Locale=new();Locale.SetLanguage(settings.Language);
+        this.environment=environment;this.settings=settings;History=history;ThemeService.Apply(settings.Theme);Locale=new();Locale.SetLanguage(settings.Language);
         var tempRejected=false;
         if(settings.ApprovedCustomTempPath is {} temp && new RuleDiscovery().ApproveCustomTempRoot(temp) is null){this.settings=settings with {ApprovedCustomTempPath=null};settings=this.settings;tempRejected=true;}
         var ui=new WpfDispatcher(dispatcher);

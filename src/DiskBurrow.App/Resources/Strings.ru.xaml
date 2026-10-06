@@ -115,8 +115,11 @@
   <sys:String x:Key="Issue.ChangedDuringScan">Изменилось во время проверки</sys:String>
   <sys:String x:Key="Issue.IoFailure">Ошибка чтения</sys:String>
   <sys:String x:Key="Settings.Interval">Интервал полной проверки, часов</sys:String>
-  <sys:String x:Key="Settings.Low">Предупреждать ниже, ГиБ</sys:String>
-  <sys:String x:Key="Settings.Growth">Предупреждать о росте от, ГиБ</sys:String>
+  <sys:String x:Key="Settings.Low">Предупреждать ниже, ГБ</sys:String>
+  <sys:String x:Key="Settings.Growth">Предупреждать о росте от, ГБ</sys:String>
+  <sys:String x:Key="Settings.Theme">Тема оформления</sys:String>
+  <sys:String x:Key="Theme.Light">Светлая</sys:String>
+  <sys:String x:Key="Theme.Dark">Тёмная</sys:String>
   <sys:String x:Key="Settings.Battery">Разрешить полные проверки на батарее</sys:String>
   <sys:String x:Key="Settings.Language">Язык интерфейса</sys:String>
   <sys:String x:Key="Settings.Exclusions">Исключения очистки: полный путь на каждой строке</sys:String>
@@ -152,7 +155,7 @@
   <sys:String x:Key="Cleanup.NoEligible">Нет подходящих файлов; см. условия и предупреждения.</sys:String>
   <sys:String x:Key="Cleanup.Scope">Предпросмотр включает временные файлы пользователя старше 7 дней, дампы сбоев (.dmp) старше 7 дней и HTTP-кеш закрытых Chrome и Edge. Счётчики относятся к предпросмотру до фильтров и исключений. Данные других приложений не считаются мусором.</sys:String>
   <sys:String x:Key="Cleanup.Warnings">Пропущенные пути и недоступные категории</sys:String>
-  <sys:String x:Key="Issue.Count">Количество пропусков / ошибок</sys:String>
+  <sys:String x:Key="Issue.Count">Количество</sys:String>
   <sys:String x:Key="Manual.Analyze">Просмотреть отмеченные папки и файлы</sys:String>
   <sys:String x:Key="Manual.Delete">Удалить просмотренное безвозвратно</sys:String>
   <sys:String x:Key="Manual.Review">Просмотр ручного удаления</sys:String>
