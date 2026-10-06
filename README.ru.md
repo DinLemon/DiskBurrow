@@ -5,7 +5,7 @@
 
 ## Установка
 
-1. Скачайте `DiskBurrow-0.1.0-win-x64.zip` и `.sha256` из Releases. Получите SHA-256 командой `Get-FileHash .\DiskBurrow-0.1.0-win-x64.zip -Algorithm SHA256` и сравните хеш целиком.
+1. Скачайте `DiskBurrow-0.1.1-win-x64.zip` и `.sha256` из Releases. Получите SHA-256 командой `Get-FileHash .\DiskBurrow-0.1.1-win-x64.zip -Algorithm SHA256` и сравните хеш целиком.
 2. Распакуйте ZIP **полностью**, сохранив файлы рядом. Запустите `DiskBurrow.exe` обычным пользователем. Нужны Windows 10 22H2 либо Windows 11 x64. .NET 10.0.12 и SQLite включены; установка службы и повышение прав не нужны.
 3. По умолчанию интерфейс русский; English выбирается в Настройках. Закрытие окна прячет его в трей. **Выход** в трее отменяет работу, ждёт завершения и останавливает мониторинг. Второй запуск активирует первый экземпляр текущего пользователя.
 
@@ -45,7 +45,7 @@
 dotnet restore DiskBurrow.slnx --locked-mode
 dotnet build DiskBurrow.slnx -c Release --no-restore
 dotnet test tests/DiskBurrow.Tests -c Release --no-restore
-./scripts/publish.ps1 -Version 0.1.0 -OutputDirectory ./artifacts/release-0.1.0
+./scripts/publish.ps1 -Version 0.1.1 -OutputDirectory ./artifacts/release-0.1.1
 ```
 
 Каталог выпуска должен быть **новым**: скрипт не удаляет и не переиспользует существующий. Зависимости восстанавливаются в locked mode. Оба runtime закреплены на 10.0.12; ZIP self-contained win-x64 содержит только manifest публикации MSBuild плюс лицензию, инструкцию и manifest пакета. PDB, история, отчёты и тесты не поставляются. Байты пакета проверяются на локальные пути. Package-тесты создают отдельный пакет в игнорируемом `work/`, проверяют точный состав, checksum и приватность. При первой сборке нужен интернет для runtime packs; обычная работа приложения его не требует.

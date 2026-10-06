@@ -5,7 +5,7 @@ Source: [DinLemon/DiskBurrow](https://github.com/DinLemon/DiskBurrow). Downloads
 
 ## Install and run
 
-1. Download `DiskBurrow-0.1.0-win-x64.zip` and its `.sha256` from Releases. Verify with `Get-FileHash .\DiskBurrow-0.1.0-win-x64.zip -Algorithm SHA256` and compare the complete hash.
+1. Download `DiskBurrow-0.1.1-win-x64.zip` and its `.sha256` from Releases. Verify with `Get-FileHash .\DiskBurrow-0.1.1-win-x64.zip -Algorithm SHA256` and compare the complete hash.
 2. Extract the **whole** ZIP into a folder; keep its files together. Run `DiskBurrow.exe` as your ordinary user. Requires Windows 10 22H2 or Windows 11 x64; .NET 10.0.12 and native SQLite are bundled. No installer, service or elevation is required.
 3. Russian is the default; switch to English in Settings. Closing the window hides it to the tray. Tray **Exit** cancels/drains work and ends monitoring. A second copy activates the first instance for your user.
 
@@ -45,7 +45,7 @@ Install the .NET 10 SDK (minimum 10.0.100; `global.json` permits newer 10.0 feat
 dotnet restore DiskBurrow.slnx --locked-mode
 dotnet build DiskBurrow.slnx -c Release --no-restore
 dotnet test tests/DiskBurrow.Tests -c Release --no-restore
-./scripts/publish.ps1 -Version 0.1.0 -OutputDirectory ./artifacts/release-0.1.0
+./scripts/publish.ps1 -Version 0.1.1 -OutputDirectory ./artifacts/release-0.1.1
 ```
 
 The output directory must be **new**; the publisher never removes/reuses an existing folder. It restores locked dependencies, pins both bundled frameworks to 10.0.12, publishes self-contained win-x64 and zips only the MSBuild publish manifest plus LICENSE/instructions/package manifest. Debug symbols, local scans, reports and tests are excluded; shipped bytes are checked for local source paths. Package tests build an independent fixture package in ignored `work/` and validate manifest/checksum/privacy. NuGet runtime packs require network access during the first build; ordinary app use does not.

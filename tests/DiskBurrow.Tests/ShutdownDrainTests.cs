@@ -12,30 +12,36 @@ public class ShutdownDrainTests
     [Fact] public async Task RuntimeDisposalWaitsForForegroundCancellationAndFinally()
     {
         using var tree=new TempTree();
-        await OnStaThread(()=>
+        await OnRunningStaDispatcher(async dispatcher=>
         {
-            var dispatcher=Dispatcher.CurrentDispatcher;
-            var creation=AppRuntime.CreateAsync(tree.Root,dispatcher,new NoRegistry());
-            Assert.True(BoundedDispatcherDrain.Wait(creation,dispatcher,TimeSpan.FromSeconds(2)));
-            var runtime=creation.GetAwaiter().GetResult();
+            var runtime=await AppRuntime.CreateAsync(tree.Root,dispatcher,new NoRegistry());
+            var ui=new WpfDispatcher(dispatcher);
             var cancelled=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            bool finallyCompleted=false;
+            bool finallyCompleted=false,foregroundFinalizedOnDispatcher=false;
+            runtime.Model.StateChanged+=()=>{if(!runtime.Model.Busy)foregroundFinalizedOnDispatcher=dispatcher.CheckAccess();};
             var action=runtime.Model.RunActionAsync("Status.Exported",async ct=>
             {
                 try{await Task.Delay(Timeout.Infinite,ct).ConfigureAwait(false);}
-                finally{cancelled.TrySetResult();await release.Task.ConfigureAwait(false);finallyCompleted=true;}
+                finally
+                {
+                    cancelled.TrySetResult();await release.Task.ConfigureAwait(false);
+                    await ui.InvokeAsync(()=>finallyCompleted=dispatcher.CheckAccess());
+                }
             });
             var disposal=runtime.DisposeAsync().AsTask();
             try
             {
-                Assert.True(BoundedDispatcherDrain.Wait(cancelled.Task,dispatcher,TimeSpan.FromSeconds(2)));
+                await cancelled.Task;
                 Assert.False(disposal.IsCompleted);Assert.False(finallyCompleted);Assert.True(runtime.Model.Busy);
+                // Session ending may stop pumping while finalization is held; normal exit keeps awaiting it.
+                Assert.False(BoundedDispatcherDrain.Wait(disposal,dispatcher,TimeSpan.FromMilliseconds(20)));
+                Assert.False(action.IsCompleted);Assert.False(disposal.IsCompleted);
             }
-            finally{release.TrySetResult();Assert.True(BoundedDispatcherDrain.Wait(Task.WhenAll(action,disposal),dispatcher,TimeSpan.FromSeconds(2)));}
-            Assert.True(finallyCompleted);Assert.False(runtime.Model.Busy);
+            finally{release.TrySetResult();await Task.WhenAll(action,disposal);}
+            Assert.True(finallyCompleted);Assert.True(foregroundFinalizedOnDispatcher);Assert.False(runtime.Model.Busy);
             bool restarted=false;
-            Assert.True(BoundedDispatcherDrain.Wait(runtime.Model.RunActionAsync("Status.Exported",_=>{restarted=true;return Task.CompletedTask;}),dispatcher,TimeSpan.FromSeconds(1)));
+            await runtime.Model.RunActionAsync("Status.Exported",_=>{restarted=true;return Task.CompletedTask;});
             Assert.False(restarted);
         });
     }
@@ -100,6 +106,27 @@ public class ShutdownDrainTests
     }
     private sealed class TinyPlanner(CleanupCandidate candidate) : ICleanupPlanner {public Task<CleanupPlan> PreviewAsync(IReadOnlySet<string> excluded,CancellationToken ct)=>Task.FromResult(new CleanupPlan(Guid.NewGuid(),DateTimeOffset.UtcNow,[candidate]));}
     private sealed class TinyExecutor : ICleanupExecutor {public Task<CleanupReport> ExecuteAsync(CleanupPlan plan,IReadOnlySet<Guid> ids,CancellationToken ct)=>Task.FromResult(new CleanupReport(plan.Id,ids.Select(id=>new CleanupItemResult(id,CleanupOutcome.Deleted,null)).ToArray(),0));}
+    private static Task OnRunningStaDispatcher(Func<Dispatcher,Task> action)
+    {
+        var result=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread=new Thread(()=>
+        {
+            var dispatcher=Dispatcher.CurrentDispatcher;
+            SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(dispatcher));
+            Exception? failure=null;
+            _ = dispatcher.InvokeAsync(async ()=>
+            {
+                try{await action(dispatcher);}
+                catch(Exception error){failure=error;}
+                finally{dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);}
+            });
+            Dispatcher.Run();
+            if(failure is null)result.SetResult();else result.SetException(failure);
+        }){IsBackground=true};
+        thread.SetApartmentState(ApartmentState.STA);thread.Start();
+        // Harness watchdog only: ordinary runtime disposal has no session-ending deadline.
+        return result.Task.WaitAsync(TimeSpan.FromSeconds(20));
+    }
     private static Task OnStaThread(Action action)
     {
         var result=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

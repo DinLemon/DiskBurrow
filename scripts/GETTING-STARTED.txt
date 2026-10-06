@@ -1,4 +1,4 @@
-DiskBurrow 0.1.0 / Windows x64
+DiskBurrow / Windows x64
 
 Extract the entire ZIP into a writable folder, then open DiskBurrow.exe.
 Windows 10 22H2 or Windows 11 x64 is required. .NET is bundled.
