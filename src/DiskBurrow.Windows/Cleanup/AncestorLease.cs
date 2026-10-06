@@ -11,6 +11,8 @@ public sealed class AncestorLease : IDisposable
     private readonly List<(string Path, SafeFileHandle Handle, FileIdentity Identity)> ancestors = [];
     private AncestorLease(NativeFileApi files) => this.files = files;
     public ulong Volume => ancestors[0].Identity.Volume;
+    internal IReadOnlyDictionary<string, FileIdentity> Identities => ancestors.ToDictionary(
+        ancestor => ancestor.Path, ancestor => ancestor.Identity, StringComparer.OrdinalIgnoreCase);
 
     public static AncestorLease OpenVerified(RuleRoot root, string candidatePath, NativeFileApi? files = null)
     {

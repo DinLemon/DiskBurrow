@@ -21,11 +21,11 @@ public sealed class AppRuntime : IAsyncDisposable
         IMonitoringEnvironment? environment=null,IDiskScanner? scanner=null)
     {
         var store=new SettingsStore(directory);var settings=await store.LoadAsync(default);var startup=store.LastUserMessage;
-        var runtime=new AppRuntime(settings,store,new SqliteHistoryStore(new StorageBudget(directory)),dispatcher,registry??new WindowsRunRegistry(),startup,environment??new WindowsEnvironment(),scanner??new WindowsDiskScanner());
+        var runtime=new AppRuntime(directory,settings,store,new SqliteHistoryStore(new StorageBudget(directory)),dispatcher,registry??new WindowsRunRegistry(),startup,environment??new WindowsEnvironment(),scanner??new WindowsDiskScanner());
         await runtime.Model.LoadSelectedRootAsync();
         return runtime;
     }
-    private AppRuntime(AppSettings settings,SettingsStore store,SqliteHistoryStore history,Dispatcher dispatcher,IRunRegistry registry,string? startup,IMonitoringEnvironment environment,IDiskScanner scanner)
+    private AppRuntime(string dataDirectory,AppSettings settings,SettingsStore store,SqliteHistoryStore history,Dispatcher dispatcher,IRunRegistry registry,string? startup,IMonitoringEnvironment environment,IDiskScanner scanner)
     {
         this.environment=environment;this.settings=settings;History=history;Locale=new();Locale.SetLanguage(settings.Language);
         var tempRejected=false;
@@ -34,7 +34,8 @@ public sealed class AppRuntime : IAsyncDisposable
         Coordinator=new(settings,scanner,history,environment,store);
         var cleanup=new CleanupViewModel(new Planner(this),new Executor(this),history,ui,()=>history.LastUserMessage){ExcludedPaths=settings.ExcludedPaths.ToHashSet(StringComparer.OrdinalIgnoreCase)};
         var settingsVm=new SettingsViewModel(settings,store,new AutostartRegistration(registry,Environment.ProcessPath!),p=>new RuleDiscovery().ApproveCustomTempRoot(p)?.Path,s=>{this.settings=s;Coordinator.ApplySettings(s);cleanup.ExcludedPaths=s.ExcludedPaths.ToHashSet(StringComparer.OrdinalIgnoreCase);Locale.SetLanguage(s.Language);});
-        Model=new(Coordinator,environment,ui,Locale,new OverviewViewModel(ui),new HistoryViewModel(history,ui,()=>history.LastUserMessage),cleanup,settingsVm,settings);
+        var manual=new ManualDeletionViewModel(new WindowsManualDeletionService(new WindowsRuleEnvironment().KnownDirectories,AppContext.BaseDirectory,dataDirectory),history,ui,()=>history.LastUserMessage);
+        Model=new(Coordinator,environment,ui,Locale,new OverviewViewModel(ui),new HistoryViewModel(history,ui,()=>history.LastUserMessage),cleanup,settingsVm,settings,manual);
         if(startup is not null)Model.ShowStartup("Settings.Recovered",startup);
         if(tempRejected)Model.ShowStartup("Settings.TempRejected","Saved TEMP approval did not pass RuleDiscovery validation.");
         if(settingsVm.AutostartDetails is {} detail)Model.ShowStartup("Settings.AutostartMoved",detail);

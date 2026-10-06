@@ -9,6 +9,29 @@ namespace DiskBurrow.Tests;
 public sealed class MonitoringCoordinatorTests
 {
     [Fact]
+    public async Task ExplicitAlternativeEngineIsUsedAndNeverSilentlyJoinedByNormalScan()
+    {
+        using var tree=new TempTree();var normal=new HeldScanner();var fast=new HeldScanner();
+        await using var coordinator=Create(tree,normal);
+        var pending=coordinator.RequestScanAsync(@"C:\",fast,default);
+        await fast.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAsync<InvalidOperationException>(()=>coordinator.RequestScanAsync(@"C:\",default));
+        var shared=coordinator.RequestScanAsync(@"C:\",fast,default);fast.Release.SetResult();
+        Assert.Equal((await pending).Id,(await shared).Id);Assert.Equal(1,fast.InvocationCount);Assert.Equal(0,normal.InvocationCount);
+        var regular=coordinator.RequestScanAsync(@"C:\",default);await normal.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));normal.Release.SetResult();await regular;
+        Assert.Equal(1,normal.InvocationCount);
+    }
+    [Fact]
+    public async Task AlternativeEngineRetainsExclusiveGateAndStopCancellation()
+    {
+        using var tree=new TempTree();var normal=new HeldScanner();var fast=new HeldScanner();await using var coordinator=Create(tree,normal);
+        var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var exclusive=coordinator.RunExclusiveAsync(async ct=>{entered.SetResult();await release.Task.WaitAsync(ct);return 1;},default);await entered.Task;
+        var pending=coordinator.RequestScanAsync(@"C:\",fast,default);await Task.Delay(25);Assert.False(fast.Started.Task.IsCompleted);
+        release.SetResult();await exclusive;await fast.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await coordinator.StopAsync();await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>pending);Assert.Equal(0,normal.InvocationCount);
+    }
+    [Fact]
     public async Task ConcurrentRequestsShareOneScan()
     {
         using var tree = new TempTree();

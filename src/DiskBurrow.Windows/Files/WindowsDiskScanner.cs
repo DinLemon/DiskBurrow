@@ -19,6 +19,8 @@ public sealed class WindowsDiskScanner(NativeFileApi? files = null) : IDiskScann
         ct.ThrowIfCancellationRequested();
         var started = DateTimeOffset.UtcNow;
         var directories = new Dictionary<string, Aggregate>(StringComparer.OrdinalIgnoreCase) { [root] = new() };
+        var tree = new ScanTreeBuilder(root);
+        var treeDirectories = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { [root] = 0 };
         var physicalFiles = new Dictionary<FileIdentity, PhysicalFile>();
         var largest = new List<FileObservation>(101);
         var issues = new List<ScanIssue>();
@@ -36,6 +38,7 @@ public sealed class WindowsDiskScanner(NativeFileApi? files = null) : IDiskScann
         void Incomplete(string directory, string path, ScanIssueKind kind)
         {
             issues.Add(new(path, kind));
+            if (treeDirectories.TryGetValue(directory, out var treeIndex)) tree.MarkIncomplete(treeIndex);
             foreach (var aggregate in Ancestors(directory))
             {
                 aggregate.Complete = false;
@@ -83,9 +86,10 @@ public sealed class WindowsDiskScanner(NativeFileApi? files = null) : IDiskScann
             largest.Sort(CompareLargest);
             if (largest.Count > 100) largest.RemoveAt(100);
 
+            var fileIndex = tree.AddFile(treeDirectories[parent], Path.GetFileName(path), observation.LogicalBytes, observation.Identity is null ? null : 0, observation.ModifiedUtc, observation.Attributes);
             if (observation.Identity is null) return;
             if (!physicalFiles.TryGetValue(observation.Identity, out var physical))
-                physicalFiles.Add(observation.Identity, new(path, observation.AllocatedBytes));
+                physicalFiles.Add(observation.Identity, new(path, observation.AllocatedBytes, fileIndex));
             else
             {
                 if (physical.AllocatedBytes != observation.AllocatedBytes)
@@ -94,7 +98,7 @@ public sealed class WindowsDiskScanner(NativeFileApi? files = null) : IDiskScann
                     Incomplete(parent, path, ScanIssueKind.ChangedDuringScan);
                     physical.AllocatedBytes = null;
                 }
-                if (ComparePaths(path, physical.Path) < 0) physical.Path = path;
+                if (ComparePaths(path, physical.Path) < 0) { physical.Path = path; physical.TreeIndex = fileIndex; }
             }
         }
 
@@ -167,6 +171,7 @@ public sealed class WindowsDiskScanner(NativeFileApi? files = null) : IDiskScann
                         if (entryAttributes.HasFlag(FileAttributes.Directory))
                         {
                             directories.TryAdd(path, new());
+                            treeDirectories[path] = tree.AddDirectory(treeDirectories[directory], Path.GetFileName(path), entryAttributes);
                             if (NativeFileApi.IsCloud(entryAttributes)) Incomplete(path, path, ScanIssueKind.CloudSkipped);
                             else if (entryAttributes.HasFlag(FileAttributes.ReparsePoint)) Incomplete(path, path, ScanIssueKind.ReparseSkipped);
                             else pending.Push(path);
@@ -187,6 +192,7 @@ public sealed class WindowsDiskScanner(NativeFileApi? files = null) : IDiskScann
         foreach (var physical in physicalFiles.Values)
         {
             ct.ThrowIfCancellationRequested();
+            tree.SetAllocatedBytes(physical.TreeIndex, physical.AllocatedBytes);
             foreach (var aggregate in Ancestors(Path.GetDirectoryName(physical.Path)!))
             {
                 if (physical.AllocatedBytes is { } bytes) aggregate.Allocated += bytes;
@@ -198,7 +204,7 @@ public sealed class WindowsDiskScanner(NativeFileApi? files = null) : IDiskScann
             directories.OrderBy(d => d.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(d => new DirectoryObservation(d.Key, d.Value.Logical,
                     d.Value.AllocationKnown ? d.Value.Allocated : null, d.Value.Complete)).ToArray(),
-            largest.ToArray(), issues.ToArray());
+            largest.ToArray(), issues.ToArray()) { Tree = tree.Build() };
     }
 
     private static int ComparePaths(string first, string second)
@@ -219,9 +225,10 @@ public sealed class WindowsDiskScanner(NativeFileApi? files = null) : IDiskScann
         public bool Complete = true, AllocationKnown = true;
     }
 
-    private sealed class PhysicalFile(string path, long? allocatedBytes)
+    private sealed class PhysicalFile(string path, long? allocatedBytes, int treeIndex)
     {
         public string Path = path;
+        public int TreeIndex = treeIndex;
         public long? AllocatedBytes = allocatedBytes;
     }
 }
