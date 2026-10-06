@@ -4,7 +4,7 @@ using System.Windows.Data;
 namespace DiskBurrow.App.Services;
 public sealed class ByteConverter : IValueConverter
 {
-    public object Convert(object value,Type targetType,object parameter,CultureInfo culture)=>value is long number?$"{(number/1073741824d).ToString("N2",culture)} {(culture.TwoLetterISOLanguageName=="ru"?"ГиБ":"GiB")}":LocalizationService.ReadText(culture.TwoLetterISOLanguageName=="ru"?"ru":"en","Unknown");
+    public object Convert(object value,Type targetType,object parameter,CultureInfo culture)=>value is long number?ByteDisplay.Format(number,culture):LocalizationService.ReadText(culture.TwoLetterISOLanguageName=="ru"?"ru":"en","Unknown");
     public object ConvertBack(object value,Type targetType,object parameter,CultureInfo culture)=>throw new NotSupportedException();
 }
 public sealed class LocalizedValueConverter : IMultiValueConverter

@@ -17,7 +17,7 @@
 </p>
 
 <p>
-  <a href="https://github.com/DinLemon/DiskBurrow/releases/download/v0.2.0/DiskBurrow-0.2.0-win-x64.zip"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/DinLemon/DiskBurrow/releases/download/v0.2.1/DiskBurrow-0.2.1-win-x64.zip"><strong>Download for Windows</strong></a>
   &nbsp; · &nbsp; <a href="#install-and-run">Quick start</a>
   &nbsp; · &nbsp; <a href="README.ru.md">Русский</a>
 </p>
@@ -30,16 +30,19 @@
 
 ## Install and run
 
-1. Download `DiskBurrow-0.2.0-win-x64.zip` and its `.sha256` from Releases. Verify with `Get-FileHash .\DiskBurrow-0.2.0-win-x64.zip -Algorithm SHA256` and compare the complete hash.
+1. Download `DiskBurrow-0.2.1-win-x64.zip` and its `.sha256` from Releases. Verify with `Get-FileHash .\DiskBurrow-0.2.1-win-x64.zip -Algorithm SHA256` and compare the complete hash.
 2. Extract the **whole** ZIP into a folder; keep its files together. Run `DiskBurrow.exe` as your ordinary user. Requires Windows 10 22H2 or Windows 11 x64; .NET 10.0.12 and native SQLite are bundled. The optional fast NTFS scan requests UAC for a separate process that only reads disk metadata.
 3. Russian is the default; switch to English in Settings. Closing the window hides it to the tray. Tray **Exit** cancels/drains work and ends monitoring. A second copy activates the first instance for your user.
 
 The build is **unsigned**; Windows may show an unknown-publisher/SmartScreen warning. Review the source and checksum before deciding to run it. A checksum checks integrity; it is not a publisher signature.
 
+Light and dark appearances switch immediately in Settings. Save persists the choice for the next launch; numeric thresholds retain their exact byte values.
+
 ## Monitoring and privacy
 
 - Windows identifies the system volume. Other local folders/drives can be selected manually; network drives are not monitored in the background.
-- Full scans default to every **6 hours**, with a **5 minute** startup delay. Settings allow 1, 6, 12 or 24 hours. Free space is checked every 5 minutes; default low-space warning is below **15 GiB**, folder growth warning at **5 GiB**, at most once per folder per day. Missed scans coalesce; scans never overlap. Full background scans wait on battery by default.
+- Full scans default to every **6 hours**, with a **5 minute** startup delay. Settings allow 1, 6, 12 or 24 hours. Free space is checked every 5 minutes; default low-space warning is below **15 GB**, folder growth warning at **5 GB**, at most once per folder per day. Missed scans coalesce; scans never overlap. Full background scans wait on battery by default.
+- Sizes and editable thresholds use decimal **GB** (**1 GB = 1,000,000,000 bytes**). Existing settings retain their exact byte thresholds; the previous 15 GiB / 5 GiB defaults appear as 16.10612736 GB / 5.36870912 GB. Saving without editing preserves those thresholds. JSON exports retain exact byte counts.
 - Autostart is **off** until explicitly enabled and saved. If you move an opted-in installation, review/save the autostart setting at the new location. Pause stops full background scans; free-space checks and low-space alerts continue; Exit stops the app.
 - History keeps the latest **30** completed scans and at most **100** largest files per scan. SQLite database, sidecars and logs have a **250 MiB** budget; logs are capped at **10 MiB**. Storage failure leaves the live result visible. Data/settings live under `%LOCALAPPDATA%\DiskBurrow`, outside the EXE folder. Exit before backing up/removing local data; history is not part of the ZIP.
 - Cleanup journal records keep reviewed file paths, rule metadata and outcomes locally within the same storage budget. Older GUID-only records are explicitly unmapped; no path is invented.
@@ -86,7 +89,7 @@ Install the .NET 10 SDK (minimum 10.0.100; `global.json` permits newer 10.0 feat
 dotnet restore DiskBurrow.slnx --locked-mode
 dotnet build DiskBurrow.slnx -c Release --no-restore
 dotnet test tests/DiskBurrow.Tests -c Release --no-restore
-./scripts/publish.ps1 -Version 0.2.0 -OutputDirectory ./artifacts/release-0.2.0
+./scripts/publish.ps1 -Version 0.2.1 -OutputDirectory ./artifacts/release-0.2.1
 ```
 
 The output directory must be **new**; the publisher never removes/reuses an existing folder. It restores locked dependencies, pins both bundled frameworks to 10.0.12, publishes self-contained win-x64 and zips only the MSBuild publish manifest plus LICENSE/third-party notices/instructions/package manifest. Debug symbols, local scans, reports and tests are excluded; shipped bytes are checked for local source paths. Package tests build an independent fixture package in ignored `work/` and validate manifest/checksum/privacy. NuGet runtime packs require network access during the first build; ordinary app use does not.

@@ -146,11 +146,16 @@ public sealed class MainViewModel : ObservableModel
         {await Overview.ClearAsync(Root,()=>IsCurrent(requestId));await dispatcher.InvokeAsync(()=>{if(IsCurrent(requestId)){alertKey="Alert.Unavailable";Refresh();}});return;}
         root=contextRoot;Refresh();await LoadContextAsync(contextRoot,requestId,alert);
     }
-    public string Bytes(long? bytes)=>bytes is {} n?$"{(n/1073741824d).ToString("N2",System.Globalization.CultureInfo.GetCultureInfo(locale.Language))} {(locale.Language=="ru"?"ГиБ":"GiB")}":locale.Text("Unknown");
+    public string Bytes(long? bytes)=>bytes is {} n?ByteDisplay.Format(n,System.Globalization.CultureInfo.GetCultureInfo(locale.Language)):locale.Text("Unknown");
     public void ShowStartup(string key,string details){startupKey=key;StartupDetails=details;Refresh();}
     private void CoordinatorStatus()=>Observe(dispatcher.InvokeAsync(()=>{if(coordinator.ScanRunning&&cancelScanRequested)coordinator.CancelScan();if(coordinator.LastUserMessage is {} details){primaryKey="History.Error";ErrorDetails=details;}Refresh();StateChanged?.Invoke();}));
     private void ProgressReceived(ScanProgress p)=>Observe(dispatcher.InvokeAsync(()=>{Progress=$"{p.FilesVisited:N0} / {p.DirectoriesVisited:N0}   {p.CurrentPath}";Refresh();}));
-    private void SnapshotReceived(ScanSnapshot snapshot){if(SameRoot(Root,snapshot.Root))Observe(ShowSnapshotAsync(snapshot));}
+    // Scanner events arrive on a worker. Display setup clears selection and notifies
+    // loaded WPF views before its first await, so enter it on the UI dispatcher.
+    private void SnapshotReceived(ScanSnapshot snapshot)=>Observe(dispatcher.InvokeAsync(()=>
+    {
+        if(!detached&&SameRoot(Root,snapshot.Root))Observe(ShowSnapshotAsync(snapshot));
+    }));
     public async Task ShowSnapshotAsync(ScanSnapshot snapshot)
     {
         root=snapshot.Root;var request=BeginDisplay();

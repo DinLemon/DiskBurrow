@@ -22,7 +22,7 @@ public sealed class DiskMapControl : FrameworkElement
  private void Unsubscribe(){if(Model is {} model)model.MapChanged-=ModelUpdated;}
  protected override void OnRender(DrawingContext dc)
  {
-  base.OnRender(dc);dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(239,244,249)),null,new Rect(RenderSize));
+  base.OnRender(dc);dc.DrawRectangle(TryFindResource("SurfaceBackgroundBrush") as Brush ?? new SolidColorBrush(Color.FromRgb(239,244,249)),null,new Rect(RenderSize));
   if(Model is not {} model||model.Tree is not {} tree)return;
   tiles=model.Layout(ActualWidth,ActualHeight);dc.PushTransform(new MatrixTransform(model.Zoom,0,0,model.Zoom,pan.X,pan.Y));
   foreach(var tile in tiles)
@@ -76,7 +76,7 @@ public sealed class DiskMapControl : FrameworkElement
  {
   base.OnMouseWheel(e);if(Model is null)return;var p=e.GetPosition(this);var old=Model.Zoom;Model.ChangeZoom(e.Delta>0?1.3:1/1.3);var ratio=Model.Zoom/old;pan=Model.Zoom==1?new():new(p.X-(p.X-pan.X)*ratio,p.Y-(p.Y-pan.Y)*ratio);InvalidateVisual();e.Handled=true;
  }
- private string FormatBytes(long bytes)=>$"{bytes/1073741824d:N2} {(LanguageCode=="ru"?"ГиБ":"GiB")}";
+ private string FormatBytes(long bytes)=>ByteDisplay.Format(bytes,CultureInfo.GetCultureInfo(LanguageCode));
  public void OpenFocused(){if(Model?.Tree is not {} tree||Model.FocusedIndex<0)return;var entry=tree.Entries[Model.FocusedIndex];var path=tree.GetPath(Model.FocusedIndex);try{Recommendations.OpenFolder(entry.IsDirectory?path:Path.GetDirectoryName(path)!);}catch(Exception error) when(error is ArgumentException or System.ComponentModel.Win32Exception or IOException){Model.ReportError(error.Message);}}
  public bool HandleKey(Key key,ModifierKeys modifiers=ModifierKeys.None)
  {

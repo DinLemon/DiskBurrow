@@ -9,7 +9,15 @@ public sealed class SettingsStore(string directory) : IMonitoringStateStore
     private readonly SemaphoreSlim _writeGate = new(1);
     public string? LastUserMessage { get; private set; }
 
-    public Task<AppSettings> LoadAsync(CancellationToken ct) => LoadAsync("settings.json", new AppSettings(), s => s.Validate(), ct);
+    public Task<AppSettings> LoadAsync(CancellationToken ct) => LoadAsync("settings.json", new AppSettings(), s => s.Validate(), ct,
+        (settings, document) =>
+        {
+            // Existing documents used binary defaults for omitted thresholds. Explicit
+            // fields already contain bytes and must never be rescaled. Save materializes
+            // both fields, so subsequent loads retain the exact effective thresholds.
+            if (!document.TryGetProperty(nameof(AppSettings.LowSpaceBytes), out _)) settings.LowSpaceBytes = 15L << 30;
+            if (!document.TryGetProperty(nameof(AppSettings.GrowthBytes), out _)) settings.GrowthBytes = 5L << 30;
+        });
     public Task<AlertSuppressionState> LoadAlertStateAsync(CancellationToken ct) => LoadAsync("alerts.json", new AlertSuppressionState(), state =>
     {
         if (state.LowSpaceRoots is null || state.LastGrowthNotifiedUtc is null || state.LastGrowthSnapshot is null ||
@@ -27,15 +35,18 @@ public sealed class SettingsStore(string directory) : IMonitoringStateStore
     }
     public Task SaveAlertStateAsync(AlertSuppressionState state, CancellationToken ct) => SaveAsync("alerts.json", state, ct);
 
-    private async Task<T> LoadAsync<T>(string name, T fallback, Action<T> validate, CancellationToken ct)
+    private async Task<T> LoadAsync<T>(string name, T fallback, Action<T> validate, CancellationToken ct,
+        Action<T, JsonElement>? normalize = null)
     {
         ct.ThrowIfCancellationRequested();
         try
         {
             var path = Path.Combine(_directory, name);
             await using var stream = File.OpenRead(path);
-            var value = await JsonSerializer.DeserializeAsync<T>(stream, cancellationToken: ct)
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            var value = document.RootElement.Deserialize<T>()
                 ?? throw new JsonException("The settings document is null.");
+            normalize?.Invoke(value, document.RootElement);
             validate(value);
             LastUserMessage = null;
             return value;

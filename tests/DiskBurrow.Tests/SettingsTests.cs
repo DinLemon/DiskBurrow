@@ -13,8 +13,8 @@ public sealed class SettingsTests
         Assert.Equal(6, settings.IntervalHours);
         Assert.Equal(TimeSpan.FromMinutes(5), settings.InitialDelay);
         Assert.Equal(TimeSpan.FromMinutes(5), settings.FreeSpaceInterval);
-        Assert.Equal(15L * 1024 * 1024 * 1024, settings.LowSpaceBytes);
-        Assert.Equal(5L * 1024 * 1024 * 1024, settings.GrowthBytes);
+        Assert.Equal(15_000_000_000L, settings.LowSpaceBytes);
+        Assert.Equal(5_000_000_000L, settings.GrowthBytes);
         Assert.Equal("ru", settings.Language);
         Assert.False(settings.AllowOnBattery);
         Assert.False(settings.Autostart);

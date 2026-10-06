@@ -10,7 +10,7 @@ public sealed class ManualDeletionReviewWindow : Window
 {
     public ManualDeletionReviewWindow(ManualDeletePlan? plan,CleanupReport? report,LocalizationService locale,Func<long?,string> bytes)
     {
-        Title=locale.Text("Manual.Review");Width=760;Height=560;MinWidth=480;MinHeight=360;
+        Style=(Style)FindResource(typeof(Window));Title=locale.Text("Manual.Review");Width=760;Height=560;MinWidth=480;MinHeight=360;
         WindowStartupLocation=WindowStartupLocation.CenterOwner;
         var panel=new DockPanel{Margin=new Thickness(20)};
         var close=new Button{Content=locale.Text("Manual.Close"),IsCancel=true,IsDefault=true,HorizontalAlignment=HorizontalAlignment.Right,Margin=new Thickness(0,12,0,0)};
