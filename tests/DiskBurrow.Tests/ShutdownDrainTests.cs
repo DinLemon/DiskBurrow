@@ -84,13 +84,14 @@ public class ShutdownDrainTests
             Assert.True(BoundedDispatcherDrain.Wait(vm.ExecuteSelectedAsync(true,default),dispatcher,TimeSpan.FromSeconds(1)));Assert.False(store.WriteOnDispatcher);Assert.NotNull(vm.Report);
         });
     }
-    [Fact] public async Task FormDetectsAndClearsInvalidSettingsBinding()
+    [Fact] public async Task FormValidationFindsAndClearsInvalidDescendantBinding()
     {
         await OnStaThread(()=>
         {
-            var panel=new StackPanel();var field=new System.Windows.Controls.TextBox();panel.Children.Add(field);
-            field.SetBinding(System.Windows.Controls.TextBox.TextProperty,new Binding("Value"){Source=new NumberValue()});
-            var expression=field.GetBindingExpression(System.Windows.Controls.TextBox.TextProperty)!;
+            var panel=new StackPanel();var field=new Border();panel.Children.Add(field);
+            field.SetBinding(System.Windows.FrameworkElement.WidthProperty,new Binding("Value"){Source=new NumberValue()});
+            var expression=field.GetBindingExpression(System.Windows.FrameworkElement.WidthProperty)!;
+            Assert.Equal(BindingStatus.Active,expression.Status);Assert.Equal(15d,field.Width);Assert.False(FormValidation.HasErrors(panel));
             Validation.MarkInvalid(expression,new ValidationError(new ExceptionValidationRule(),expression,"invalid fixture input",null));
             Assert.True(FormValidation.HasErrors(panel));Validation.ClearInvalid(expression);Assert.False(FormValidation.HasErrors(panel));
         });
