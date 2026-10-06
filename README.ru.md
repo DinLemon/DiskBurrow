@@ -1,7 +1,32 @@
-# DiskBurrow
+<div align="center">
 
-Переносимое приложение для контроля диска и явной очистки Windows. [English](README.md).
-[Исходники](https://github.com/DinLemon/DiskBurrow) · [Выпуски](https://github.com/DinLemon/DiskBurrow/releases).
+<h1>DiskBurrow</h1>
+<p><strong>Узнай, куда исчезает место на диске.</strong></p>
+
+<p>
+  <img src="docs/assets/diskburrow-logo.png" alt="DiskBurrow — знак накопителя и норы из приложения, в синем цвете" width="760">
+</p>
+
+<p>Следи за ростом папок, сохраняй историю и проверяй файлы перед очисткой.</p>
+
+<p>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-265D9F?style=flat-square" alt="Лицензия: MIT"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-265D9F?style=flat-square" alt="Windows 10 / 11 x64">
+  <a href="https://github.com/DinLemon/DiskBurrow/actions/workflows/ci.yml"><img src="https://github.com/DinLemon/DiskBurrow/actions/workflows/ci.yml/badge.svg" alt="Статус Windows CI и переносимой сборки"></a>
+  <a href="https://github.com/DinLemon/DiskBurrow/releases/latest"><img src="https://img.shields.io/github/v/release/DinLemon/DiskBurrow?style=flat-square&amp;color=265D9F" alt="Последний релиз"></a>
+</p>
+
+<p>
+  <a href="https://github.com/DinLemon/DiskBurrow/releases/download/v0.1.1/DiskBurrow-0.1.1-win-x64.zip"><strong>Скачать для Windows</strong></a>
+  &nbsp; · &nbsp; <a href="#установка">Быстрый старт</a>
+  &nbsp; · &nbsp; <a href="README.md">English</a>
+</p>
+
+<p>Без установки и телеметрии. Автозапуск — по твоему выбору.</p>
+
+</div>
+
+---
 
 ## Установка
 

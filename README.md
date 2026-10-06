@@ -1,7 +1,32 @@
-# DiskBurrow
+<div align="center">
 
-Portable disk monitoring and careful, explicit cleanup for Windows. [Русский](README.ru.md).
-Source: [DinLemon/DiskBurrow](https://github.com/DinLemon/DiskBurrow). Downloads: [Releases](https://github.com/DinLemon/DiskBurrow/releases).
+<h1>DiskBurrow</h1>
+<p><strong>Find where your disk space disappears.</strong></p>
+
+<p>
+  <img src="docs/assets/diskburrow-logo.png" alt="DiskBurrow — the app's drive and burrow emblem, in blue" width="760">
+</p>
+
+<p>Track folder growth, keep local history, and review files before cleanup.</p>
+
+<p>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-265D9F?style=flat-square" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-265D9F?style=flat-square" alt="Windows 10 / 11 x64">
+  <a href="https://github.com/DinLemon/DiskBurrow/actions/workflows/ci.yml"><img src="https://github.com/DinLemon/DiskBurrow/actions/workflows/ci.yml/badge.svg" alt="Windows validation and portable release status"></a>
+  <a href="https://github.com/DinLemon/DiskBurrow/releases/latest"><img src="https://img.shields.io/github/v/release/DinLemon/DiskBurrow?style=flat-square&amp;color=265D9F" alt="Latest release"></a>
+</p>
+
+<p>
+  <a href="https://github.com/DinLemon/DiskBurrow/releases/download/v0.1.1/DiskBurrow-0.1.1-win-x64.zip"><strong>Download for Windows</strong></a>
+  &nbsp; · &nbsp; <a href="#install-and-run">Quick start</a>
+  &nbsp; · &nbsp; <a href="README.ru.md">Русский</a>
+</p>
+
+<p>Portable. No telemetry. Autostart is your choice.</p>
+
+</div>
+
+---
 
 ## Install and run
 
