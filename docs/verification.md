@@ -115,3 +115,9 @@ Fresh local final-source suite: **352 passed, 1 skipped, 353 total**, Release bu
 Actual desktop clicks exposed a preexisting scan-publication failure missed by direct UI-thread model probes. The worker's SnapshotChanged event entered BeginDisplay and selection refresh before its first await; DiskMapControl.ModelUpdated accessed a DispatcherObject off-thread. The snapshot event now begins on the UI dispatcher and rechecks the selected root and shutdown state. A real WPF scan-button regression failed on Map, Largest and Overview before the fix and passes on all three afterward.
 
 The main thread's Computer Use kernel still fails before initialization with Windows error 3 while an isolated subagent's supported helper works. This is a tool-session failure, not an established DiskBurrow fault; its missing path is unknown. Actual native resizing to 880x600, tray-icon/menu clicks, denial on the secure UAC desktop and actual Windows-logon autostart remain unverified. Minimum-size rendering is a programmatic WPF result; UAC handling/autostart retain their separate existing controlled tests. No UI automation was used to act on security permission prompts or to approve irreversible deletion.
+
+## v0.2.2 empty-table caption regression
+
+The final native GUI check of v0.2.1 found the Russian Cleanup selection caption clipped in a narrow empty table. The real 880 x 600 WPF window reproduces this: the 52 px header positions its 50.34 px label 6 px from the left, so the label extends beyond the column. The regression checks the transformed label bounds as well as text width. The shorter Russian caption `Выбор` fits. v0.2.1 and its published assets remain immutable.
+
+Final v0.2.2 local Release suite: 352 passed, 1 existing symlink-privilege skip, 353 total; all 48 WPF theme/language/size views passed, including the empty Cleanup caption bounds. Native GUI checks and downloaded-package results are recorded separately from these programmatic checks.

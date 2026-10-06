@@ -62,7 +62,7 @@
   <sys:String x:Key="Modified">Изменён</sys:String>
   <sys:String x:Key="Reason">Причина</sys:String>
   <sys:String x:Key="Category">Категория</sys:String>
-  <sys:String x:Key="Select">Выбрать</sys:String>
+  <sys:String x:Key="Select">Выбор</sys:String>
   <sys:String x:Key="Filter">Фильтр пути</sys:String>
   <sys:String x:Key="Outcome">Результат</sys:String>
   <sys:String x:Key="Delta">Изменение данных</sys:String>
