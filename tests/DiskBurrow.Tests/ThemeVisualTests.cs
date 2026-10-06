@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -73,6 +74,18 @@ internal static class ThemeVisualProbe
                     }
                     foreach (var grid in Find<DataGrid>(tabs))
                         Require(ReferenceEquals(grid.Background, window.FindResource("SurfaceBackgroundBrush")), "DataGrid has stale background.");
+                    if (tab == 4)
+                    {
+                        var grid = Find<DataGrid>(tabs).Single(g => Equals(g.Tag, "Candidates"));
+                        var header = Find<DataGridColumnHeader>(grid).Single(h => h.Column?.DisplayIndex == 0);
+                        var label = (TextBlock)header.Content;
+                        var text = new FormattedText(label.Text, System.Globalization.CultureInfo.GetCultureInfo(language), label.FlowDirection,
+                            new Typeface(label.FontFamily, label.FontStyle, label.FontWeight, label.FontStretch), label.FontSize,
+                            Brushes.Black, VisualTreeHelper.GetDpi(label).PixelsPerDip);
+                        var labelBounds = label.TransformToAncestor(header).TransformBounds(new Rect(label.RenderSize));
+                        Require(labelBounds.Right <= header.ActualWidth + .5 && label.ActualWidth >= text.WidthIncludingTrailingWhitespace - .5,
+                            $"Empty cleanup selection caption clipped: {language}, {size}, label={label.ActualWidth}, text={text.WidthIncludingTrailingWhitespace}.");
+                    }
                     if (tab == 2)
                     {
                         var view = Find<DiskMapView>(tabs).Single();
