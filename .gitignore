@@ -11,3 +11,7 @@ artifacts/
 *.db-journal
 *.log
 scan-report*
+
+# Native Rust build outputs stay outside this checkout.
+**/target/
+**/__pycache__/

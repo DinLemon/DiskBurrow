@@ -1,0 +1,32 @@
+DiskBurrow 0.3.0-alpha.1 - Rust preview (unsigned)
+
+Requires Windows 10 22H2 / Windows 11 x64 and a working Direct3D 11 driver.
+Extract the complete ZIP. Run DiskBurrow.exe as an ordinary user.
+No .NET installation or separate Visual C++ runtime is required.
+The separate fast NTFS reader requests UAC only when explicitly selected.
+Do not run the main application as administrator.
+
+PREVIEW: stable 0.2.2 remains available on GitHub. Manual parity testing of
+UAC approval/denial, tray menus, autostart at logon and all desktop layouts
+is still pending. Programmatic GPUI tests are not manual UI tests.
+
+For an isolated trial, launch in PowerShell:
+Start-Process -FilePath .\DiskBurrow.exe -ArgumentList '--data-dir "E:\DiskBurrowPreviewData" --scan-root "E:\YourTestFolder"'
+Replace these paths with new absolute local paths on your computer.
+The explicit data directory disables background monitoring, tray and autostart;
+it does not limit the folders you can deliberately select or delete.
+Use a disposable test folder first. Do not share exports without reviewing paths.
+
+Normal startup uses %LOCALAPPDATA%\DiskBurrow with existing compatible settings
+and history. Close the old application first. Back up this directory before
+trying migration. Delete operations are permanent and require separate review
+and confirmation. Changed, inaccessible, protected, linked/cloud entries are
+refused or skipped according to the native revalidation rules.
+
+Russian/English and light/dark appearance are in Settings. Save persists choices.
+Decimal GB means 1,000,000,000 bytes. Closing normal mode hides to the tray;
+Tray Exit stops the app. Closing isolated mode exits.
+
+LICENSE.txt and ThirdParty contain dependency license texts and attribution.
+manifest.json records source revision, executable checksum and runtime imports.
+Source: https://github.com/DinLemon/DiskBurrow/tree/rewrite/rust-gpui

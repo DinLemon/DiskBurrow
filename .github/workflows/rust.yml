@@ -1,0 +1,70 @@
+name: Rust preview validation
+on:
+  push:
+    branches: ['rewrite/rust-gpui']
+  pull_request:
+    paths: ['rust/**', 'scripts/*rust*', 'scripts/GETTING-STARTED-RUST.txt', '.github/workflows/rust.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install pinned Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Format, strict lint and native fixture tests
+        shell: pwsh
+        working-directory: rust
+        run: |
+          cargo fmt --all --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --workspace --locked -j 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package static-CRT preview
+        shell: pwsh
+        run: |
+          ./scripts/publish-rust.ps1 -OutputDirectory ./artifacts/rust-preview -TargetDirectory ./work/rust-release-target
+      - name: Verify freshly extracted native executable
+        shell: pwsh
+        run: |
+          $archive = Get-Item artifacts/rust-preview/*.zip
+          $expected = (Get-Content -LiteralPath ($archive.FullName + '.sha256')).Split(' ')[0]
+          if ((Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Archive checksum mismatch.' }
+          New-Item -ItemType Directory -Path work/rust-extracted,work/rust-proof/scan | Out-Null
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath work/rust-extracted
+          'DiskBurrow disposable fixture' | Set-Content work/rust-proof/scan/small.txt
+          [IO.File]::WriteAllBytes((Join-Path (Resolve-Path work/rust-proof/scan).Path 'large.bin'), [byte[]]::new(2097152))
+          $exe = (Resolve-Path work/rust-extracted/DiskBurrow.exe).Path
+          $fixture = (Resolve-Path work/rust-proof).Path
+          $argsText = '--data-dir "' + $fixture + '\data" --scan-root "' + $fixture + '\scan" --verify-runtime "' + $fixture + '\runtime.json"'
+          $process = Start-Process -FilePath $exe -ArgumentList $argsText -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Verification timed out.' }
+          if ($process.ExitCode -ne 0) { throw 'Extracted executable verification failed.' }
+          $proof = Get-Content work/rust-proof/runtime.json -Raw | ConvertFrom-Json
+          if (-not $proof.ordinary_user -or -not $proof.traversal_completed -or $proof.largest_files -ne 2 -or $proof.map_tiles -lt 1 -or $proof.appearances.Count -ne 4) { throw 'Runtime proof incomplete.' }
+          $manifest = Get-Content work/rust-extracted/manifest.json -Raw | ConvertFrom-Json
+          if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.executable_sha256) { throw 'Executable checksum mismatch.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-preview
+          path: |
+            artifacts/rust-preview/*.zip
+            artifacts/rust-preview/*.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-runtime-proof
+          path: work/rust-proof/runtime.json
+          if-no-files-found: ignore

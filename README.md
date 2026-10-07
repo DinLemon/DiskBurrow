@@ -28,6 +28,14 @@
 
 ---
 
+## Rust migration preview
+
+The `rewrite/rust-gpui` branch contains **0.3.0-alpha.1**, a native Rust/GPUI
+candidate. Stable **0.2.2** above remains the published download. See
+[Rust build instructions and validation limits](rust/README.md); manual desktop,
+Rust UAC and logon/tray parity checks are still pending. This branch does not
+publish or replace stable releases automatically.
+
 ## Install and run
 
 1. Download `DiskBurrow-0.2.2-win-x64.zip` and its `.sha256` from Releases. Verify with `Get-FileHash .\DiskBurrow-0.2.2-win-x64.zip -Algorithm SHA256` and compare the complete hash.
