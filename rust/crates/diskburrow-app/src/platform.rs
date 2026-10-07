@@ -601,6 +601,20 @@ pub fn restore_own_window(handle: isize) {
     }
 }
 
+pub fn hide_own_window(handle: isize) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowThreadProcessId, SW_HIDE, ShowWindow,
+    };
+    let hwnd = handle as HWND;
+    let mut process = 0;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut process);
+        if process == GetCurrentProcessId() {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -676,7 +690,7 @@ mod tests {
     #[test]
     fn restore_reopens_only_an_owned_native_fixture_window() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, IsWindowVisible, SW_HIDE, ShowWindow, WS_POPUP,
+            CreateWindowExW, DestroyWindow, IsWindowVisible, WS_POPUP,
         };
         let class = wide("STATIC");
         let title = wide("DiskBurrow native lifecycle fixture");
@@ -700,9 +714,8 @@ mod tests {
         assert_eq!(unsafe { IsWindowVisible(handle) }, 0);
         restore_own_window(handle as isize);
         assert_ne!(unsafe { IsWindowVisible(handle) }, 0);
-        unsafe {
-            ShowWindow(handle, SW_HIDE);
-        };
+        hide_own_window(handle as isize);
+        assert_eq!(unsafe { IsWindowVisible(handle) }, 0);
         restore_own_window(handle as isize);
         assert_ne!(unsafe { IsWindowVisible(handle) }, 0);
         unsafe {

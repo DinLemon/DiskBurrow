@@ -29,7 +29,9 @@ The ignored upstream timing test is retained as ignored, not counted as passing.
 - Integration policies: private same-user named-pipe multi-chunk transfer,
   cancellation while native I/O is pending, bounded protocol/error frames,
   autostart compensation that preserves concurrent changes, and restoration
-  of a hidden window belonging to this process only.
+  and hiding of a window belonging to this process only. The GPUI Windows
+  platform's global activate/hide methods are no-ops; the app uses its own
+  checked native window handle for these operations.
 - Actual ordinary-user EXE: read-only disposable fixture scan, live map
   geometry, four localized appearance projections and compatible JSON export.
   Fresh native startup produced a nonzero window handle and the expected title
@@ -58,3 +60,9 @@ No substitute desktop driver or custom Win32 UI automation was used.
 The ZIP is an unsigned preview for review/testing. No stable merge, replacement
 release or automatic publication is performed before these checks are resolved.
 CI artifacts are additional reproducible checks, not manual desktop acceptance.
+Hosted Windows runners run elevated with UAC disabled
+([GitHub runner documentation](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)).
+The CI-only verifier therefore creates a temporary standard account on its
+disposable VM and checks `ordinary_user` in the extracted executable's proof.
+Its local guard rejects execution outside GitHub Actions. The product's refusal
+to run its main process elevated remains unchanged.

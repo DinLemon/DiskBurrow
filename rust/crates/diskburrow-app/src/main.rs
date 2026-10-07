@@ -134,14 +134,18 @@ fn run() -> Result<()> {
                     move |window, cx| {
                         let entity = cx.new(|cx| ui::App::new(runtime, window, cx));
                         let weak = entity.downgrade();
-                        window.on_window_should_close(cx, move |_, cx| {
+                        window.on_window_should_close(cx, move |window, cx| {
                             if diagnostic {
                                 let _ = weak.update(cx, |app, cx| {
                                     app.runtime.command(contract::Command::Exit);
                                     cx.notify();
                                 });
                             } else {
-                                cx.hide();
+                                if let Ok(handle) = window.window_handle()
+                                    && let RawWindowHandle::Win32(handle) = handle.as_raw()
+                                {
+                                    platform::hide_own_window(handle.hwnd.get());
+                                }
                             }
                             false
                         });
@@ -149,10 +153,7 @@ fn run() -> Result<()> {
                     },
                 )
                 .expect("Create the DiskBurrow window");
-            if background {
-                cx.hide();
-            } else {
-                cx.activate(true);
+            if !background {
                 let _ = handle.update(cx, |_, window, _| {
                     if let Ok(handle) = window.window_handle()
                         && let RawWindowHandle::Win32(handle) = handle.as_raw()
