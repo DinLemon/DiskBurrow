@@ -2,13 +2,14 @@
 
 > For agentic workers: execute in this session with independent native/service workers and a final whole-branch review. TDD cycle for each new behavioral component; existing vendored upstream tests are retained.
 
-**Goal:** replace all 0.2.2 functionality with Rust+GPUI without changing stored user data semantics or safety guarantees.
+**Goal:** make Rust+GPUI the primary client without changing compatible stored user data semantics or deletion safety guarantees.
+**Main-branch decision (2026-10-07):** the user explicitly approved merging Rust to replace the active C# client, with the disclosed preview limitations. The target branch is `main` (the repository does not use `master`). Preserve immutable C# source/release at `v0.2.2`; archive its historical validation separately. Approval is not evidence of manual UAC, tray, logon or visual acceptance.
 **Architecture:** vendor scanner/layout; canonical compatible service DTOs; native handle-bound cleanup; UI-thread GPUI state with background workers and bounded events.
 **Tech Stack:** Rust1.97/windows-msvc, gpui-kit0.6.6, gpui-omarchy0.1.3, windows-sys0.61, rusqlite bundled, serde/chrono/uuid.
 **Spec:** ../specs/2026-10-07-rust-gpui-design.md
 
 ## Global constraints
-Windows x64; all build/dependency/scratch writes on owned E; same-user UAC reader only; no deletion without reviewed confirmation; existing 0.2.2 release remains immutable. Child tasks own separate crates; root owns workspace, scanner/runtime/UI and integration. Product version0.3.0-alpha.1 until complete migration validation.
+Windows x64; all build/dependency/scratch writes on owned E; same-user UAC reader only; no deletion without reviewed confirmation; existing 0.2.2 release remains immutable. Child tasks own separate crates; root owns workspace, scanner/runtime/UI and integration. Product version 0.3.0-alpha.3 remains a preview; source promotion does not imply completed manual validation.
 
 ## Review focus
 - Reparse/protected boundary replacement between preview and deletion: identity-bound handles, fail closed.
@@ -46,6 +47,11 @@ Files app/src/{app,ui,locale,map_view}.rs.
 - [x] cargo fmt --check, cargo clippy --workspace --all-targets -- -D warnings, cargo test --workspace; required upstream tests plus Rust parity fixtures green.
 - [x] Build native release and isolated EXE scan/map/export proof; actual native window startup observed.
 - [ ] Supported manual desktop page/theme/language/scan/review/cancel checks, real Rust UAC approval/denial, tray clicks and logon autostart. Sky initialization failed with Windows error 3; GPUI frame tests are programmatic evidence only.
-- [ ] Publish allowlisted ZIP/checksum in rewrite branch/draft PR; attach PR. Merge/release only after complete parity, final fresh archive proof and whole-branch review.
+- [x] Publish a local alpha.2 allowlisted ZIP/checksum, attach the draft PR, and run the freshly extracted ordinary-user EXE on C: with map/history/export proof (source `90d8091`).
+- [x] Fix ordinary scan metadata accounting without increasing its 1 GiB estimated resident / 20 million retained-entry ceilings; genuine exhaustion still rejects a completed result. Local suite: 269 passed, 0 failed, 1 upstream timing test ignored.
+- [ ] Promote Rust build/docs/assets/CI to the `main` baseline and remove active C# source/build entry points; preserve C# at immutable tag `v0.2.2` and its release.
+- [ ] Obtain fresh passing package/standard-user CI evidence for the final source revision, publish alpha.3 as an unsigned prerelease if validated, and merge the authorized replacement PR. Keep all pending desktop checks disclosed.
+- [x] Independent source review of `90d8091`: no P0/P1 findings reported; one P2 immediate automatic retry issue identified.
+- [x] Correct the automatic retry finding with TDD (failed scans: at least 15-minute monotonic delay; cancelled scans: configured interval; manual scan remains immediate) and validate the final revision. Final local suite: 281 passed, 0 failed, 1 ignored; a separate rereview found no remaining scheduler blocker. The old alpha.2 executable proof does not cover alpha.3.
 
-Track results in work/rust-parity.md and user-facing outputs/DiskBurrow-rust-migration.md; preserve exact command/provenance and unresolved limitations.
+Track current results in docs/rust-validation.md and local runtime proof artifacts; preserve exact source/package provenance and unresolved limitations. Historical C# verification lives under docs/legacy-csharp/.

@@ -1,7 +1,7 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
-    println!("cargo:rerun-if-changed=../../../src/DiskBurrow.App/Resources/DiskBurrow.ico");
+    println!("cargo:rerun-if-changed=../../resources/DiskBurrow.ico");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -16,7 +16,7 @@ fn main() {
             .trim_start_matches(r"\\?\")
             .replace('\\', "\\\\")
     };
-    let icon = quoted(package.join("../../../src/DiskBurrow.App/Resources/DiskBurrow.ico"));
+    let icon = quoted(package.join("../../resources/DiskBurrow.ico"));
     // GPUI already links resource 1/RT_MANIFEST with asInvoker and PerMonitorV2.
     // A second manifest resource would collide with gpui.lib at link time.
     fs::write(
@@ -24,8 +24,8 @@ fn main() {
         format!(
             r#"1 ICON "{icon}"
 1 VERSIONINFO
-FILEVERSION 0,3,0,2
-PRODUCTVERSION 0,3,0,2
+FILEVERSION 0,3,0,3
+PRODUCTVERSION 0,3,0,3
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x2L
 FILEOS 0x40004L
@@ -37,11 +37,11 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "DinLemon\0"
    VALUE "FileDescription", "DiskBurrow Rust preview\0"
-   VALUE "FileVersion", "0.3.0-alpha.2\0"
+   VALUE "FileVersion", "0.3.0-alpha.3\0"
    VALUE "InternalName", "DiskBurrow\0"
    VALUE "OriginalFilename", "DiskBurrow.exe\0"
    VALUE "ProductName", "DiskBurrow\0"
-   VALUE "ProductVersion", "0.3.0-alpha.2\0"
+   VALUE "ProductVersion", "0.3.0-alpha.3\0"
   END
  END
  BLOCK "VarFileInfo"

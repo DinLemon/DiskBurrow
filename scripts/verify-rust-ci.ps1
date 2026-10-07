@@ -23,6 +23,14 @@ Expand-Archive -LiteralPath $archive.FullName -DestinationPath $extracted
 $exe = Join-Path $extracted 'DiskBurrow.exe'
 $manifest = Get-Content -LiteralPath (Join-Path $extracted 'manifest.json') -Raw | ConvertFrom-Json
 if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.executable_sha256) { throw 'Executable checksum mismatch.' }
+if ((Get-Item -LiteralPath $exe).VersionInfo.ProductVersion -cne $manifest.version -or
+    $archive.Name -cne ('DiskBurrow-' + $manifest.version + '-rust-win-x64.zip')) {
+    throw 'Archive, executable and manifest versions differ.'
+}
+$revision = (& git -C $workspace rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $manifest.source_commit -cne $revision -or $manifest.source_dirty -ne $false -or -not $manifest.static_crt) {
+    throw 'Expected an unmodified static-CRT archive built from the checked-out revision.'
+}
 'DiskBurrow disposable fixture' | Set-Content -LiteralPath (Join-Path $fixture 'scan\small.txt')
 [IO.File]::WriteAllBytes((Join-Path $fixture 'scan\large.bin'), [byte[]]::new(2097152))
 $name = 'dbpreview-' + [guid]::NewGuid().ToString('N').Substring(0,8)
@@ -50,6 +58,25 @@ try {
     $proof = Get-Content -LiteralPath (Join-Path $fixture 'runtime.json') -Raw | ConvertFrom-Json
     if (-not $proof.ordinary_user -or -not $proof.traversal_completed -or $proof.largest_files -ne 2 -or $proof.map_tiles -lt 1 -or $proof.appearances.Count -ne 4) {
         throw 'Ordinary-user runtime proof incomplete.'
+    }
+    $scan = Join-Path $fixture 'scan'
+    if ($proof.product_version -cne $manifest.version -or
+        [IO.Path]::GetFullPath($proof.executable) -ine $exe -or
+        [IO.Path]::GetFullPath($proof.scan_root).TrimEnd('\') -ine $scan.TrimEnd('\')) {
+        throw 'Runtime proof does not identify the extracted executable and isolated scan fixture.'
+    }
+    $appearances = @($proof.appearances | ForEach-Object { $_.language + '/' + $_.theme } | Sort-Object -Unique)
+    if (($appearances -join ',') -cne 'en/dark,en/light,ru/dark,ru/light') { throw 'Language and theme proof incomplete.' }
+    $snapshotPath = Join-Path $fixture 'runtime.snapshot.json'
+    if ([IO.Path]::GetFullPath($proof.snapshot_export) -ine $snapshotPath) { throw 'Unexpected snapshot export location.' }
+    $snapshot = Get-Content -LiteralPath $snapshotPath -Raw | ConvertFrom-Json
+    $observed = @($snapshot.LargestFiles | Sort-Object Path)
+    $actual = @(Get-ChildItem -LiteralPath $scan -File | Sort-Object FullName)
+    if (-not $snapshot.TraversalCompleted -or $observed.Count -ne 2 -or $snapshot.Issues.Count -ne 0) { throw 'Exported scan is incomplete.' }
+    for ($i = 0; $i -lt $actual.Count; $i++) {
+        if ([IO.Path]::GetFullPath($observed[$i].Path) -ine $actual[$i].FullName -or $observed[$i].LogicalBytes -ne $actual[$i].Length) {
+            throw 'Exported file path or logical byte count does not match the real fixture.'
+        }
     }
 } finally {
     if ($null -ne $process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit(10000) | Out-Null }

@@ -193,7 +193,7 @@ fn run(
     context.icon.uID = 1;
     context.icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     context.icon.uCallbackMessage = CALLBACK;
-    let embedded = include_bytes!("../../../../src/DiskBurrow.App/Resources/DiskBurrow.ico");
+    let embedded = include_bytes!("../../../resources/DiskBurrow.ico");
     let hicon = best_icon_image(embedded)
         .map(|image| unsafe {
             CreateIconFromResourceEx(
@@ -484,7 +484,7 @@ mod tests {
     use super::*;
     #[test]
     fn embedded_blue_icon_contains_a_valid_largest_image() {
-        let data = include_bytes!("../../../../src/DiskBurrow.App/Resources/DiskBurrow.ico");
+        let data = include_bytes!("../../../resources/DiskBurrow.ico");
         let image = best_icon_image(data).unwrap();
         assert!(!image.is_empty());
         assert!(image.len() < data.len());

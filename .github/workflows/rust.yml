@@ -1,21 +1,28 @@
-name: Rust preview validation
+name: Rust Windows validation and release
 on:
   push:
-    branches: ['rewrite/rust-gpui']
+    branches: ['**']
+    tags: ['v0.3.*']
   pull_request:
-    paths: ['rust/**', 'scripts/*rust*', 'scripts/GETTING-STARTED-RUST.txt', '.github/workflows/rust.yml']
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: rust-preview-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: rust-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+env:
+  RUSTUP_TOOLCHAIN: '1.97.0'
 jobs:
   validate:
     runs-on: windows-latest
     timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
       - name: Prepare owned test scratch
         shell: pwsh
         run: |
@@ -23,7 +30,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $scratch | Out-Null
           "TEMP=$scratch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TMP=$scratch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: x64
       - name: Install pinned Rust
@@ -31,6 +38,37 @@ jobs:
         run: |
           rustup toolchain install 1.97.0 --profile minimal --component rustfmt --component clippy
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Restore locked Rust dependency and build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2, Node 24
+        with:
+          workspaces: |
+            rust -> target
+            rust -> ../work/rust-release-target
+          shared-key: windows-x64-static-crt-v1
+          # PRs can restore the default-branch cache; only push runs save it.
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Check package and release version
+        id: version
+        shell: pwsh
+        working-directory: rust
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $metadata = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read locked package metadata.' }
+          $app = @($metadata.packages | Where-Object name -eq 'diskburrow-app')
+          if ($app.Count -ne 1) { throw 'Expected one DiskBurrow application package.' }
+          $version = $app[0].version
+          if ($version -notmatch '^0\.3\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') { throw 'Unsupported release version.' }
+          if ($env:REF_TYPE -eq 'tag') {
+            if ($env:REF_NAME -cne ('v' + $version)) { throw 'Release tag does not match Cargo package version.' }
+            git merge-base --is-ancestor HEAD origin/main
+            if ($LASTEXITCODE -ne 0) { throw 'Release tags must point to a commit already on main.' }
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "prerelease=$($version.Contains('-').ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - name: Format, strict lint and native fixture tests
         shell: pwsh
         working-directory: rust
@@ -41,24 +79,57 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --workspace --locked -j 2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Package static-CRT preview
+      - name: Package static-CRT Windows executable
         shell: pwsh
         run: |
           ./scripts/publish-rust.ps1 -OutputDirectory ./artifacts/rust-preview -TargetDirectory ./work/rust-release-target
-      - name: Verify freshly extracted native executable
+      - name: Verify freshly extracted ordinary-user executable
         shell: pwsh
         run: |
           ./scripts/verify-rust-ci.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: rust-preview
+          name: diskburrow-windows-x64
           path: |
             artifacts/rust-preview/*.zip
             artifacts/rust-preview/*.sha256
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+          retention-days: 30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: rust-runtime-proof
-          path: work/rust-proof/runtime.json
+          path: |
+            work/rust-proof/runtime.json
+            work/rust-proof/runtime.snapshot.json
           if-no-files-found: ignore
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: diskburrow-windows-x64
+          path: release-artifacts
+      - name: Publish validated Windows archive
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PACKAGE_VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" == "v$PACKAGE_VERSION" ]]
+          cd release-artifacts
+          archive="DiskBurrow-$PACKAGE_VERSION-rust-win-x64.zip"
+          test -f "$archive"
+          sha256sum --check "$archive.sha256"
+          printf '%s\n' 'Portable Windows x64 Rust client.' '' 'This archive passed strict lint, the full native fixture suite, checksum verification, and an extracted executable scan/map/export under a disposable standard Windows account.' '' 'See GETTING-STARTED.txt in the archive for supported behavior and the verification scope.' > release-notes.md
+          args=(release create "$RELEASE_TAG" "$archive" "$archive.sha256" --verify-tag --title "DiskBurrow $PACKAGE_VERSION" --notes-file release-notes.md)
+          if [[ "$PRERELEASE" == 'true' ]]; then args+=(--prerelease); fi
+          gh "${args[@]}"

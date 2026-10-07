@@ -1080,11 +1080,11 @@ mod tests {
         for (language, source) in [
             (
                 "ru",
-                include_str!("../../../../src/DiskBurrow.App/Resources/Strings.ru.xaml"),
+                include_str!("../tests/fixtures/legacy/Strings.ru.xaml"),
             ),
             (
                 "en",
-                include_str!("../../../../src/DiskBurrow.App/Resources/Strings.en.xaml"),
+                include_str!("../tests/fixtures/legacy/Strings.en.xaml"),
             ),
         ] {
             let mut count = 0;

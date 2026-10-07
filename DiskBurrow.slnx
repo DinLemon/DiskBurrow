@@ -1,7 +1,0 @@
-<Solution>
-  <Project Path="src/DiskBurrow.App/DiskBurrow.App.csproj" />
-  <Project Path="src/DiskBurrow.Core/DiskBurrow.Core.csproj" />
-  <Project Path="src/DiskBurrow.Windows/DiskBurrow.Windows.csproj" />
-  <Project Path="src/DiskBurrow.Storage/DiskBurrow.Storage.csproj" />
-  <Project Path="tests/DiskBurrow.Tests/DiskBurrow.Tests.csproj" />
-</Solution>

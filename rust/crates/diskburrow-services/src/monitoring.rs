@@ -89,12 +89,22 @@ pub fn compare_snapshots(previous: &ScanSnapshot, current: &ScanSnapshot) -> Vec
 pub struct TickActions {
     pub check_free_space: bool,
     pub request_full_scan: Option<String>,
+    pub automatic_request_id: Option<u64>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomaticScanOutcome {
+    Completed,
+    Failed,
+    Cancelled,
 }
 /// The host uses a monotonic clock for ticks; a wall-clock adjustment cannot spin checks.
 pub struct MonitoringScheduler {
     schedule: SchedulePolicy,
     system_root: String,
     next_space_check: std::time::Duration,
+    automatic_generation: u64,
+    pending_automatic: Option<u64>,
+    automatic_not_before: std::time::Duration,
 }
 impl MonitoringScheduler {
     pub fn new(
@@ -107,6 +117,9 @@ impl MonitoringScheduler {
             schedule: SchedulePolicy::new(settings, started_utc)?,
             system_root: normalize_path(&system_root.into()),
             next_space_check: started_monotonic + std::time::Duration::from_secs(300),
+            automatic_generation: 0,
+            pending_automatic: None,
+            automatic_not_before: started_monotonic,
         })
     }
     pub fn tick(
@@ -124,18 +137,77 @@ impl MonitoringScheduler {
         if check_free_space {
             self.next_space_check = monotonic.saturating_add(std::time::Duration::from_secs(300));
         }
+        let automatic_request_id = if self.pending_automatic.is_none()
+            && monotonic >= self.automatic_not_before
+            && self
+                .schedule
+                .is_full_scan_due(now_utc, on_battery, operation_running)
+        {
+            self.automatic_generation = self
+                .automatic_generation
+                .checked_add(1)
+                .expect("Automatic scan generation exhausted");
+            self.pending_automatic = Some(self.automatic_generation);
+            self.pending_automatic
+        } else {
+            None
+        };
         TickActions {
             check_free_space,
-            request_full_scan: if self.schedule.is_full_scan_due(
-                now_utc,
-                on_battery,
-                operation_running,
-            ) {
-                Some(self.system_root.clone())
-            } else {
-                None
-            },
+            request_full_scan: automatic_request_id.map(|_| self.system_root.clone()),
+            automatic_request_id,
         }
+    }
+    /// Only the reserved request for the system volume can release the automatic slot.
+    /// Attempt outcomes do not create or modify completed scan history.
+    pub fn finish_automatic(
+        &mut self,
+        request_id: u64,
+        root: &str,
+        outcome: AutomaticScanOutcome,
+        monotonic: std::time::Duration,
+    ) -> bool {
+        if self.pending_automatic != Some(request_id)
+            || path_key(root) != path_key(&self.system_root)
+        {
+            return false;
+        }
+        self.pending_automatic = None;
+        self.record_attempt_outcome(outcome, monotonic);
+        true
+    }
+    /// Explicit system-volume scans affect the next automatic attempt without
+    /// taking its reservation. Other roots and outstanding requests are untouched.
+    pub fn record_manual_outcome(
+        &mut self,
+        root: &str,
+        outcome: AutomaticScanOutcome,
+        monotonic: std::time::Duration,
+    ) -> bool {
+        if self.pending_automatic.is_some() || path_key(root) != path_key(&self.system_root) {
+            return false;
+        }
+        self.record_attempt_outcome(outcome, monotonic);
+        true
+    }
+    fn record_attempt_outcome(
+        &mut self,
+        outcome: AutomaticScanOutcome,
+        monotonic: std::time::Duration,
+    ) {
+        let delay = match outcome {
+            AutomaticScanOutcome::Completed => std::time::Duration::ZERO,
+            AutomaticScanOutcome::Failed => std::time::Duration::from_secs(15 * 60),
+            AutomaticScanOutcome::Cancelled => {
+                std::time::Duration::from_secs(self.schedule.settings.interval_hours as u64 * 3600)
+            }
+        };
+        self.automatic_not_before = if outcome == AutomaticScanOutcome::Completed {
+            monotonic
+        } else {
+            self.automatic_not_before
+                .max(monotonic.saturating_add(delay))
+        };
     }
     pub fn apply_settings(&mut self, settings: AppSettings) -> Result<()> {
         self.schedule.apply_settings(settings)

@@ -574,7 +574,7 @@ impl App {
             );
         }
         nav.child(div().flex_1())
-            .child(self.note("0.3.0-alpha.2 · Rust / GPUI".into()))
+            .child(self.note("0.3.0-alpha.3 · Rust / GPUI".into()))
     }
     fn table(
         &self,

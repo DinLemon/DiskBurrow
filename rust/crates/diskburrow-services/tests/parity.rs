@@ -1,14 +1,10 @@
 use chrono::{DateTime, Duration, Utc};
 use diskburrow_services::*;
-use std::{fs, path::PathBuf};
+use std::fs;
 use uuid::Uuid;
 
 fn fixture() -> tempfile::TempDir {
-    let root = PathBuf::from(
-        "E:/CodexWork/DiskBurrow-20261005-01a10bc8/work/rust-scratch/service-fixtures",
-    );
-    fs::create_dir_all(&root).unwrap();
-    tempfile::tempdir_in(root).unwrap()
+    tempfile::tempdir().unwrap()
 }
 fn now() -> DateTime<Utc> {
     "2026-10-05T00:00:00.1234567Z".parse().unwrap()

@@ -34,6 +34,8 @@ struct Active {
     cancel: Cancellation,
     progress: Option<Arc<CoreProgress>>,
     join: JoinHandle<()>,
+    automatic_request: Option<(u64, String)>,
+    scan_root: Option<String>,
 }
 enum Work {
     Scan {
@@ -277,6 +279,10 @@ impl Runtime {
         if self.exiting {
             return;
         }
+        let scan_root = match &purpose {
+            Purpose::Scan { root, .. } => Some(root.clone()),
+            _ => None,
+        };
         let Admission::Started(token) = self.coordinator.begin(purpose) else {
             return;
         };
@@ -303,6 +309,8 @@ impl Runtime {
                     cancel,
                     progress: None,
                     join,
+                    automatic_request: None,
+                    scan_root,
                 });
                 self.view.busy = true;
                 self.view.error = None;
@@ -310,6 +318,13 @@ impl Runtime {
             }
             Err(error) => {
                 self.coordinator.complete(token, true);
+                if let Some(root) = scan_root {
+                    self.scheduler.record_manual_outcome(
+                        &root,
+                        AutomaticScanOutcome::Failed,
+                        self.started.elapsed(),
+                    );
+                }
                 self.error(error);
             }
         }
@@ -681,6 +696,25 @@ impl Runtime {
             },
         );
     }
+    fn start_automatic_scan(&mut self, root: String, request_id: u64) {
+        // A scheduled reservation belongs only to the newly admitted operation.
+        // Never attach it to an existing manual worker or a superseded token.
+        let previous = self.active.as_ref().map(|a| a.token);
+        self.view.root = root.clone();
+        self.start_scan(false);
+        if let Some(active) = &mut self.active
+            && previous != Some(active.token)
+        {
+            active.automatic_request = Some((request_id, root));
+        } else {
+            self.scheduler.finish_automatic(
+                request_id,
+                &root,
+                AutomaticScanOutcome::Failed,
+                self.started.elapsed(),
+            );
+        }
+    }
     fn preview_manual(&mut self) {
         if self.marks.is_empty() {
             return;
@@ -878,6 +912,35 @@ impl Runtime {
                     let active = self.active.take().unwrap();
                     let cancelled = active.cancel.is_cancelled();
                     let _ = active.join.join();
+                    let mut result = result;
+                    if let Some(root) = &active.scan_root {
+                        if matches!(&result, Ok(Work::Scan { snapshot, .. })
+                            if path_key(&snapshot.root) != path_key(root))
+                        {
+                            result = Err(anyhow::anyhow!("Scan returned another root"));
+                        }
+                        let outcome = if cancelled {
+                            AutomaticScanOutcome::Cancelled
+                        } else if matches!(result, Ok(Work::Scan { .. })) {
+                            AutomaticScanOutcome::Completed
+                        } else {
+                            AutomaticScanOutcome::Failed
+                        };
+                        if let Some((request_id, expected_root)) = &active.automatic_request {
+                            self.scheduler.finish_automatic(
+                                *request_id,
+                                expected_root,
+                                outcome,
+                                self.started.elapsed(),
+                            );
+                        } else {
+                            self.scheduler.record_manual_outcome(
+                                root,
+                                outcome,
+                                self.started.elapsed(),
+                            );
+                        }
+                    }
                     let publish = self.coordinator.complete(token, cancelled);
                     self.view.busy = false;
                     match result {
@@ -928,9 +991,10 @@ impl Runtime {
                 self.rebuild();
                 dirty = true;
             }
-            if let Some(root) = actions.request_full_scan {
-                self.view.root = root;
-                self.start_scan(false);
+            if let Some(root) = actions.request_full_scan
+                && let Some(request_id) = actions.automatic_request_id
+            {
+                self.start_automatic_scan(root, request_id);
                 dirty = true;
             }
         }
@@ -1612,6 +1676,281 @@ mod tests {
             assert!(Instant::now() < deadline, "Worker timed out");
             thread::sleep(Duration::from_millis(5));
         }
+    }
+    #[test]
+    fn failed_automatic_fixture_scan_returns_idle_instead_of_retrying_immediately() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::new(fixture.path().join("data")).unwrap();
+        idle(&mut runtime);
+        let missing = fixture
+            .path()
+            .join("missing")
+            .to_string_lossy()
+            .into_owned();
+        runtime.scheduler = MonitoringScheduler::new(
+            AppSettings::default(),
+            Utc::now() - chrono::Duration::minutes(10),
+            Duration::ZERO,
+            missing,
+        )
+        .unwrap();
+        runtime.monitoring = true;
+        runtime.poll();
+        let first = runtime.active.as_ref().unwrap().token;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            runtime.next_monitor = Instant::now();
+            runtime.poll();
+            if runtime.active.as_ref().is_none_or(|a| a.token != first) {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !runtime.view.busy,
+            "Failure immediately launched another automatic scan"
+        );
+        assert!(runtime.view.error.is_some());
+        assert!(
+            runtime
+                .scheduler
+                .tick(
+                    Utc::now() + chrono::Duration::days(2),
+                    runtime.started.elapsed() + Duration::from_secs(901),
+                    false,
+                    false,
+                    true,
+                )
+                .request_full_scan
+                .is_some(),
+            "Failed automatic worker never released its scheduler slot"
+        );
+    }
+    #[test]
+    fn cancelled_automatic_fixture_scan_waits_six_hours_but_manual_other_root_is_immediate() {
+        let fixture = tempfile::tempdir().unwrap();
+        let scan_root = fixture.path().join("automatic");
+        let manual_root = fixture.path().join("manual");
+        fs::create_dir(&scan_root).unwrap();
+        fs::create_dir(&manual_root).unwrap();
+        fs::write(manual_root.join("one.bin"), b"fixture").unwrap();
+        let mut runtime = Runtime::new(fixture.path().join("data")).unwrap();
+        idle(&mut runtime);
+        let root = scan_root.to_string_lossy().into_owned();
+        runtime.scheduler = MonitoringScheduler::new(
+            AppSettings::default(),
+            Utc::now() - chrono::Duration::minutes(10),
+            Duration::ZERO,
+            root.clone(),
+        )
+        .unwrap();
+        let request = runtime
+            .scheduler
+            .tick(Utc::now(), runtime.started.elapsed(), false, false, true)
+            .automatic_request_id
+            .unwrap();
+        runtime.start_automatic_scan(root, request);
+        runtime.command(Command::Cancel);
+        idle(&mut runtime);
+        assert!(runtime.snapshot.is_none(), "Cancelled result was published");
+        assert!(
+            runtime
+                .scheduler
+                .tick(
+                    Utc::now() + chrono::Duration::days(2),
+                    Duration::from_secs(901),
+                    false,
+                    false,
+                    true
+                )
+                .request_full_scan
+                .is_none()
+        );
+        runtime.command(Command::SetRoot(manual_root.to_string_lossy().into_owned()));
+        runtime.command(Command::Scan(false));
+        assert!(
+            runtime.view.busy,
+            "Automatic delay blocked explicit manual scan"
+        );
+        idle(&mut runtime);
+        assert_eq!(
+            runtime.snapshot.as_ref().unwrap().root,
+            manual_root.to_string_lossy()
+        );
+        assert!(
+            runtime
+                .scheduler
+                .tick(
+                    Utc::now() + chrono::Duration::days(2),
+                    Duration::from_secs(21_599),
+                    false,
+                    false,
+                    true
+                )
+                .request_full_scan
+                .is_none()
+        );
+        assert!(
+            runtime
+                .scheduler
+                .tick(
+                    Utc::now() + chrono::Duration::days(2),
+                    Duration::from_secs(21_601),
+                    false,
+                    false,
+                    true
+                )
+                .request_full_scan
+                .is_some()
+        );
+    }
+    #[test]
+    fn superseded_finished_token_cannot_release_the_automatic_reservation() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::new(fixture.path().join("data")).unwrap();
+        idle(&mut runtime);
+        let root = fixture.path().to_string_lossy().into_owned();
+        runtime.scheduler = MonitoringScheduler::new(
+            AppSettings::default(),
+            Utc::now() - chrono::Duration::minutes(10),
+            Duration::ZERO,
+            root.clone(),
+        )
+        .unwrap();
+        let request = runtime
+            .scheduler
+            .tick(Utc::now(), Duration::ZERO, false, false, true)
+            .automatic_request_id
+            .unwrap();
+        runtime.spawn(
+            Purpose::Scan {
+                root: root.clone(),
+                fast: false,
+            },
+            "Status.Scanning",
+            |cancel, _, _| {
+                while !cancel.is_cancelled() {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                bail!("Cancelled")
+            },
+        );
+        let token = runtime.active.as_ref().unwrap().token;
+        runtime.active.as_mut().unwrap().automatic_request = Some((request, root));
+        runtime
+            .tx
+            .send(Event::Finished(
+                token - 1,
+                Err(anyhow::anyhow!("Late old worker")),
+            ))
+            .unwrap();
+        runtime.poll();
+        assert_eq!(runtime.active.as_ref().unwrap().token, token);
+        assert!(
+            runtime
+                .scheduler
+                .tick(
+                    Utc::now() + chrono::Duration::days(2),
+                    Duration::from_secs(90_000),
+                    false,
+                    false,
+                    true
+                )
+                .request_full_scan
+                .is_none()
+        );
+        runtime.command(Command::Cancel);
+        idle(&mut runtime);
+    }
+    #[test]
+    fn manual_system_scan_cancellation_postpones_automatic_scan() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::new(fixture.path().join("data")).unwrap();
+        idle(&mut runtime);
+        let root = fixture.path().to_string_lossy().into_owned();
+        runtime.scheduler = MonitoringScheduler::new(
+            AppSettings::default(),
+            Utc::now() - chrono::Duration::minutes(10),
+            Duration::ZERO,
+            root.clone(),
+        )
+        .unwrap();
+        runtime.command(Command::SetRoot(root));
+        runtime.command(Command::Scan(false));
+        runtime.command(Command::Cancel);
+        idle(&mut runtime);
+        assert!(
+            runtime
+                .scheduler
+                .tick(
+                    Utc::now() + chrono::Duration::days(2),
+                    Duration::from_secs(901),
+                    false,
+                    false,
+                    true
+                )
+                .request_full_scan
+                .is_none()
+        );
+    }
+    #[test]
+    fn manual_system_scan_failure_postpones_automatic_scan() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::new(fixture.path().join("data")).unwrap();
+        idle(&mut runtime);
+        let root = fixture
+            .path()
+            .join("missing")
+            .to_string_lossy()
+            .into_owned();
+        runtime.scheduler = MonitoringScheduler::new(
+            AppSettings::default(),
+            Utc::now() - chrono::Duration::minutes(10),
+            Duration::ZERO,
+            root.clone(),
+        )
+        .unwrap();
+        runtime.command(Command::SetRoot(root));
+        runtime.command(Command::Scan(false));
+        idle(&mut runtime);
+        assert!(
+            runtime
+                .scheduler
+                .tick(
+                    Utc::now() + chrono::Duration::days(2),
+                    Duration::from_secs(899),
+                    false,
+                    false,
+                    true
+                )
+                .request_full_scan
+                .is_none()
+        );
+    }
+    #[test]
+    fn non_scan_failure_does_not_postpone_the_automatic_scan() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::new(fixture.path().join("data")).unwrap();
+        idle(&mut runtime);
+        runtime.scheduler = MonitoringScheduler::new(
+            AppSettings::default(),
+            Utc::now() - chrono::Duration::minutes(10),
+            Duration::ZERO,
+            fixture.path().to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        runtime.spawn(Purpose::Review, "Status.Analyzing", |_, _, _| {
+            bail!("Fixture review failed")
+        });
+        idle(&mut runtime);
+        assert!(
+            runtime
+                .scheduler
+                .tick(Utc::now(), Duration::from_secs(1), false, false, true)
+                .request_full_scan
+                .is_some()
+        );
     }
     #[test]
     fn idle_poll_does_not_rebuild_large_view_projections() {
