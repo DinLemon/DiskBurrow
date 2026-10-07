@@ -1,0 +1,146 @@
+# Rust client validation — 2026-10-07
+
+Current version: **0.3.0-alpha.3**, Windows x64. The user authorized merging Rust as the
+primary client in `main`, accepting the disclosed preview limitations. That
+approval changes the development baseline; it is not evidence of manual desktop
+acceptance. C#/WPF source is preserved at tag `v0.2.2`; published stable
+**0.2.2 is unchanged**. Rust alpha.3 remains an unsigned prerelease.
+
+The completed evidence below belongs to the previous validated alpha.2 source `90d8091`. Documentation,
+CI and source cleanup for the main-branch transition do not retroactively prove
+an executable built from a later commit. New package provenance must identify
+its own source revision and validation run.
+
+## Alpha.3 source validation
+
+The current Rust-only source passed `cargo fmt --all --check`, strict Clippy
+for all workspace targets and the full locked Windows suite: **281 passed,
+0 failed, 1 ignored** (application 43, engine 12, services 22 plus 6 retry
+regressions, native cleanup 24, platform policy 10, vendored scanner 164).
+The new scheduler regression reproduced an immediate second request before the
+fix. Runtime regressions cover failure, cancellation, manual system-volume
+attempts, immediate manual scans of another root and stale worker tokens.
+Independent source review and a separate rereview found no remaining blockers
+in the changed scheduling paths; a possible test-clock flake was corrected.
+Package/hosted validation is tracked separately from these local checks.
+
+## Earlier alpha.2 passing local checks
+
+`cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked
+-- -D warnings`; `cargo test --workspace --locked`.
+**269 passed, 0 failed, 1 ignored**: application 37, engine 12, compatible
+services 22, native cleanup 24, platform policy 10, vendored scanner 164.
+The ignored upstream timing test is retained as ignored, not counted as passing.
+
+- GPUI frame/control tests: six pages, RU/EN, light/dark, editable decimal GB,
+  Save visible at 880×600, long root/breadcrumb map with at least 180 px canvas,
+  shared review dismissal. These use GPUI's test platform.
+- Runtime: ordinary scan, full live index, logical/allocated map metrics,
+  hard-link accounting, exact reasons for incomplete coverage, cancellation,
+  snapshot export without replacing existing files, retained history after
+  restart, independent volume counters and coverage, observed-cache hints.
+- Compatible persistence: PascalCase C# payloads, .NET UTC ticks and omitted
+  legacy thresholds, schema migration, corrupt-data reporting without reset,
+  concurrent storage budget and rollback of failed writes.
+- Windows native fixtures: handle-bound observations/deletion, immutable
+  single-use previews, identity and parent replacement, new/busy children,
+  reparse/cloud/protected boundaries, cancellation and partial outcomes.
+  Only freshly generated fixture trees are deletion targets.
+- Integration policies: private same-user named-pipe multi-chunk transfer,
+  cancellation while native I/O is pending, bounded protocol/error frames,
+  autostart compensation that preserves concurrent changes, and restoration
+  and hiding of a window belonging to this process only. The GPUI Windows
+  platform's global activate/hide methods are no-ops; the app uses its own
+  checked native window handle for these operations.
+- Actual ordinary-user EXE: read-only disposable fixture scan, live map
+  geometry, four localized appearance projections and compatible JSON export.
+  Fresh native startup produced a nonzero window handle and the expected title
+  within one second. This verifies window existence, not visual correctness.
+- Release uses static CRT. PE imports contain Windows OS DLLs; no .NET,
+  external SQLite, VCRUNTIME or MSVCP runtime. Original blue icon and preview
+  version are embedded; GPUI supplies its ordinary-user/DPI manifest.
+
+## Ordinary scan budget regression
+
+Alpha.1 charged four copies of the full path for every enumerated file, although
+ordinary leaves retain basenames in the tree/index and only the largest 100 files
+receive history paths. It also charged entries excluded by scan filters.
+Alpha.2 reserves full paths for directories and diagnostic entries, includes the
+root path once, and counts only retained entries. The 1 GiB estimated resident / 20 million retained-entry
+ceilings and rejection of incomplete results on genuine exhaustion are unchanged.
+Failures now include numeric entry and estimated-memory usage without file paths.
+
+Regression checks cover 128 files under a long root, filtered entries, long
+directory paths that genuinely exhaust the resident budget, and both hard limits.
+A read-only ordinary scan of the real C: drive reproduced the original error at
+approximately 175 MB peak working set. With the fix it completed 1,235,987 files
+and 264,460 directories in approximately 12.4 seconds at 282 MB peak working set.
+These measurements cover the scanner process, not the complete GUI/history.
+Protected/unreadable areas remain explicitly incomplete; traversal completion
+does not assert access to every object on the volume. The resident budget is an
+estimated metadata reservation, not a hard cap on process working set.
+
+## Extracted alpha.2 application on C:
+
+The portable archive from source `90d8091` was freshly extracted and its actual
+ordinary-user executable completed a read-only C: scan in approximately
+**41 seconds**, with peak working set **627,806,208 bytes** (about 628 MB).
+Its proof contains **264,508 directory observations**, **100 largest files**,
+**830 issues**, **412 map tiles** and four RU/EN light/dark model projections.
+A fresh SQLite database actually retained one completed snapshot (about
+**53.4 MB**); the JSON snapshot export was about **64.4 MB**. The native window
+also started with the expected title and a nonzero handle.
+
+These are application, map-model and persistence checks. They do not establish
+manual visual inspection, complete access to protected directories or a real
+UAC approval flow. Scanner-only measurements above belong to a separate run on
+a changing volume and should not be substituted for whole-application memory.
+History permits at most 30 snapshots, but its 250 MiB storage budget can prune
+large inventories sooner; no fixed promise of 30 retained whole-volume scans is
+made. The map's live index and exported snapshot have different file retention.
+
+## Follow-up source review
+
+Independent review of `90d8091` found that failed/cancelled automatic scans could
+retry immediately. The follow-up correction defers failed
+background scans for at least 15 minutes using monotonic time and cancelled
+ones until the configured interval, while allowing an immediate manual scan.
+Automatic requests reserve a generation until their current worker completes;
+failed system-volume manual scans also wait 15 minutes before any automatic
+retry, and manual cancellation postpones automatic work for the selected interval.
+Other roots and non-scan operations do not affect the automatic reservation.
+The 269-test and extracted alpha.2 evidence above predates this correction.
+
+## Outstanding acceptance checks
+
+Supported desktop helper initialization failed twice in this validation run:
+`failed to write kernel assets: Системе не удается найти указанный путь.
+(os error 3)`. Native desktop automation is otherwise unavailable here.
+No substitute desktop driver or custom Win32 UI automation was used.
+
+- Manual navigation and visual inspection of every page/column at minimum and
+  normal size, both languages and appearances; actual scan/review/cancel clicks.
+- Real Rust UAC approval and denial on the secure desktop, followed by a real
+  whole-volume NTFS scan and cancellation. The previous C# UAC test is not Rust
+  evidence. Protocol/native-pipe tests do not cover the system prompt.
+- Actual tray menu clicks, hide/second-launch restoration and Exit while busy;
+  autostart after Windows logon. Unit policy checks are narrower evidence.
+- Fresh package/hosted validation of source changes made after `90d8091`. An independent
+  source review of `90d8091` has completed: no P0/P1 findings were reported.
+  It found a P2 automatic-scan retry issue after failure/cancellation, corrected
+  with regression tests and rereviewed. This review is not a fresh acceptance test
+  or proof that later edits have been reviewed.
+
+The alpha.3 ZIP is an unsigned preview; its final executable/package verification must be recorded before publication. The user has authorized the source replacement
+and merge into `main` despite the pending manual checks; the project must keep
+those limitations visible. Stable 0.2.2 is retained unchanged. Publishing Rust
+alpha.3 requires a separately validated archive and records it as a prerelease,
+not as evidence that the outstanding desktop checks passed.
+CI artifacts are additional reproducible checks, not manual desktop acceptance.
+No passing hosted CI status or completed GitHub publication is asserted here.
+Hosted Windows runners run elevated with UAC disabled
+([GitHub runner documentation](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)).
+The CI-only verifier therefore creates a temporary standard account on its
+disposable VM and checks `ordinary_user` in the extracted executable's proof.
+Its local guard rejects execution outside GitHub Actions. The product's refusal
+to run its main process elevated remains unchanged.

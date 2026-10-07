@@ -1,0 +1,13 @@
+[package]
+name = "diskburrow-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+diskburrow-services = { path = "../diskburrow-services" }
+disktree-core = { workspace = true }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }

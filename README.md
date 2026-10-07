@@ -12,12 +12,12 @@
 <p>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-265D9F?style=flat-square" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-265D9F?style=flat-square" alt="Windows 10 / 11 x64">
-  <a href="https://github.com/DinLemon/DiskBurrow/actions/workflows/ci.yml"><img src="https://github.com/DinLemon/DiskBurrow/actions/workflows/ci.yml/badge.svg" alt="Windows validation and portable release status"></a>
-  <a href="https://github.com/DinLemon/DiskBurrow/releases/latest"><img src="https://img.shields.io/github/v/release/DinLemon/DiskBurrow?style=flat-square&amp;color=265D9F" alt="Latest release"></a>
+  <a href="https://github.com/DinLemon/DiskBurrow/actions/workflows/rust.yml"><img src="https://github.com/DinLemon/DiskBurrow/actions/workflows/rust.yml/badge.svg" alt="Rust validation and portable package status"></a>
+  <a href="https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3"><img src="https://img.shields.io/badge/Rust-0.3.0--alpha.3-265D9F?style=flat-square" alt="Rust preview version"></a>
 </p>
 
 <p>
-  <a href="https://github.com/DinLemon/DiskBurrow/releases/download/v0.2.2/DiskBurrow-0.2.2-win-x64.zip"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3"><strong>Download for Windows</strong></a>
   &nbsp; · &nbsp; <a href="#install-and-run">Quick start</a>
   &nbsp; · &nbsp; <a href="README.ru.md">Русский</a>
 </p>
@@ -28,15 +28,22 @@
 
 ---
 
+## Rust is the primary client
+
+`main` develops the native Rust/GPUI client **0.3.0-alpha.3**.
+It remains an **unsigned preview**. Manual desktop, UAC, tray and logon checks
+are pending: see [validated evidence and limitations](docs/rust-validation.md).
+The C#/WPF source is preserved in [tag v0.2.2](https://github.com/DinLemon/DiskBurrow/tree/v0.2.2);
+the previous [stable 0.2.2 release](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.2.2) remains available unchanged.
+
 ## Install and run
 
-1. Download `DiskBurrow-0.2.2-win-x64.zip` and its `.sha256` from Releases. Verify with `Get-FileHash .\DiskBurrow-0.2.2-win-x64.zip -Algorithm SHA256` and compare the complete hash.
-2. Extract the **whole** ZIP into a folder; keep its files together. Run `DiskBurrow.exe` as your ordinary user. Requires Windows 10 22H2 or Windows 11 x64; .NET 10.0.12 and native SQLite are bundled. The optional fast NTFS scan requests UAC for a separate process that only reads disk metadata.
-3. Russian is the default; switch to English in Settings. Closing the window hides it to the tray. Tray **Exit** cancels/drains work and ends monitoring. A second copy activates the first instance for your user.
+1. Open the [0.3.0-alpha.3 prerelease page](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3). Once published, its assets are `DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip` and `.zip.sha256`. Before publication, use the validated archive provided with this version.
+2. Verify with `Get-FileHash .\DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip -Algorithm SHA256` and compare the complete hash. Extract the **whole** ZIP into a new folder. Run `DiskBurrow.exe` as your ordinary user. Requires Windows 10 22H2 or Windows 11 x64; installing .NET or Rust is unnecessary. SQLite and the CRT are included in the native build.
+3. Close the old client and back up `%LOCALAPPDATA%\DiskBurrow` outside that directory before the first normal launch. Rust uses compatible settings/history. For an isolated trial: `DiskBurrow.exe --data-dir E:\DiskBurrowTrial --scan-root E:\MyTestFolder`. This disables monitoring, tray and autostart; it does **not** sandbox deliberately confirmed deletion.
+4. Russian is the default; select English in Settings. Light/dark appearances switch immediately; **Save** persists your choice. In normal mode, closing hides the window to the tray; **Exit** cancels work and ends the app. A second launch activates the existing instance for your user.
 
-The build is **unsigned**; Windows may show an unknown-publisher/SmartScreen warning. Review the source and checksum before deciding to run it. A checksum checks integrity; it is not a publisher signature.
-
-Light and dark appearances switch immediately in Settings. Save persists the choice for the next launch; numeric thresholds retain their exact byte values.
+The build is **unsigned**; Windows may show an unknown-publisher/SmartScreen warning. A checksum checks integrity; it is not a publisher signature. The optional fast NTFS scan requests UAC only for a separate process that reads metadata.
 
 ## Monitoring and privacy
 
@@ -44,7 +51,7 @@ Light and dark appearances switch immediately in Settings. Save persists the cho
 - Full scans default to every **6 hours**, with a **5 minute** startup delay. Settings allow 1, 6, 12 or 24 hours. Free space is checked every 5 minutes; default low-space warning is below **15 GB**, folder growth warning at **5 GB**, at most once per folder per day. Missed scans coalesce; scans never overlap. Full background scans wait on battery by default.
 - Sizes and editable thresholds use decimal **GB** (**1 GB = 1,000,000,000 bytes**). Existing settings retain their exact byte thresholds; the previous 15 GiB / 5 GiB defaults appear as 16.10612736 GB / 5.36870912 GB. Saving without editing preserves those thresholds. JSON exports retain exact byte counts.
 - Autostart is **off** until explicitly enabled and saved. If you move an opted-in installation, review/save the autostart setting at the new location. Pause stops full background scans; free-space checks and low-space alerts continue; Exit stops the app.
-- History keeps the latest **30** completed scans and at most **100** largest files per scan. SQLite database, sidecars and logs have a **250 MiB** budget; logs are capped at **10 MiB**. Storage failure leaves the live result visible. Data/settings live under `%LOCALAPPDATA%\DiskBurrow`, outside the EXE folder. Exit before backing up/removing local data; history is not part of the ZIP.
+- History keeps up to **30** completed scans and at most **100** largest files per scan; the storage budget can reduce retention. SQLite database, sidecars and logs have a **250 MiB** budget; logs are capped at **10 MiB**. Storage failure leaves the live result visible. Data/settings live under `%LOCALAPPDATA%\DiskBurrow`, outside the EXE folder. Exit before backing up/removing local data; history is not part of the ZIP.
 - Cleanup journal records keep reviewed file paths, rule metadata and outcomes locally within the same storage budget. Older GUID-only records are explicitly unmapped; no path is invented.
 - No telemetry or automatic network requests. GitHub/Releases and supported maintenance instructions open only on click. An explicitly requested JSON export contains real paths: review the disclosure and destination before sharing it. Deleting the ZIP does not erase local history.
 
@@ -57,7 +64,7 @@ Light and dark appearances switch immediately in Settings. Save persists the cho
 - Chrome/Edge HTTP `Cache` / `Cache_Data` only, when the corresponding browser is closed. Browser state that cannot be verified blocks that rule. Cookies, passwords, history, service-worker storage and downloads are not cleanup targets. Browser caches have no age threshold.
 - Reparse points and cloud placeholders are skipped and never hydrated. The scanner avoids double-charging hard-linked physical allocation; logical path sizes may still repeat. Cleanup may remove an explicitly selected hard-link path after normal revalidation; other links remain, so deletion may release no physical space. Inaccessible/changing entries make coverage incomplete and physical totals unknown. Logical size, known allocation subtotals and Windows used-space counters are different measurements. A completed traversal does not mean complete volume coverage.
 
-NuGet/pip cache suggestions only link to supported program tools; DiskBurrow never executes them or automatically deletes those caches. The Largest tables show up to 1,000 directories and 100 files; Cleanup shows up to 2,000 candidates. Summaries identify truncation. The disk map uses a separate full live index of observed files; retained history and JSON snapshot exports preserve the existing bounded file list.
+NuGet/pip cache suggestions only link to supported program tools; DiskBurrow never executes them or automatically deletes those caches. The Largest tables show up to 2,000 directories and 100 files; Cleanup shows up to 2,000 candidates. Summaries identify truncation. The disk map uses a separate full live index of observed files; retained history and JSON snapshot exports preserve the existing bounded file list.
 
 ## Disk map and fast NTFS scan
 
@@ -73,7 +80,7 @@ Mark individual folders/files in Largest or the disk map, then review the select
 
 This manual operation is separate from the four cache cleanup rules. Volume roots, system locations, broad user containers and the application's own files/data are protected. Unresolved protected boundaries, inaccessible entries, links and cloud placeholders block a complete deletion plan. Changed, busy or newly created entries are preserved; the result and local journal include partial failures and cancellation. Deletion does not inherit administrator rights from the scan helper.
 
-Disk map layout and NTFS parsing are adapted from [disktree](https://github.com/tobi/disktree), under MIT. See [third-party notices](THIRD_PARTY_NOTICES.txt).
+Disk map layout and NTFS parsing are adapted from [disktree](https://github.com/tobi/disktree), under MIT; see the [vendored core license](rust/vendor/disktree-core/LICENSE). The portable archive includes full dependency notices in `ThirdParty/`.
 
 ## Recovering corrupt history
 
@@ -83,17 +90,25 @@ Disk map layout and NTFS parsing are adapted from [disktree](https://github.com/
 
 ## Build and verification
 
-Install the .NET 10 SDK (minimum 10.0.100; `global.json` permits newer 10.0 feature bands) and PowerShell 7 on Windows x64:
+On Windows x64, install Rust **1.97.0**, Visual Studio 2022 C++ Build Tools,
+a Windows SDK and PowerShell. Python **3.10+** is needed to collect packaging
+notices. Use an x64 MSVC developer PowerShell and put caches/builds on a drive
+with sufficient free space:
 
 ```powershell
-dotnet restore DiskBurrow.slnx --locked-mode
-dotnet build DiskBurrow.slnx -c Release --no-restore
-dotnet test tests/DiskBurrow.Tests -c Release --no-restore
-./scripts/publish.ps1 -Version 0.2.2 -OutputDirectory ./artifacts/release-0.2.2
+$env:CARGO_TARGET_DIR = 'E:\DiskBurrowBuild\debug'
+Set-Location rust
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings
+cargo test --workspace --locked -j 2
+Set-Location ..
+./scripts/publish-rust.ps1 -OutputDirectory E:\DiskBurrowBuild\alpha3 -TargetDirectory E:\DiskBurrowBuild\release
 ```
 
-The output directory must be **new**; the publisher never removes/reuses an existing folder. It restores locked dependencies, pins both bundled frameworks to 10.0.12, publishes self-contained win-x64 and zips only the MSBuild publish manifest plus LICENSE/third-party notices/instructions/package manifest. Debug symbols, local scans, reports and tests are excluded; shipped bytes are checked for local source paths. Package tests build an independent fixture package in ignored `work/` and validate manifest/checksum/privacy. NuGet runtime packs require network access during the first build; ordinary app use does not.
+The output directory must be **new**. The publisher builds a static-CRT executable, verifies PE dependencies/version, collects dependency notices and packages only allowed files with SHA-256 and source provenance. Settings, history, tests and diagnostics are excluded. Initial Cargo restore needs network access; ordinary app use does not.
 
-Windows CI repeats locked restore, Release build/tests and packaging; branch runs upload artifacts, version-tag runs attach ZIP/checksum to a GitHub Release. Release verification status is recorded with its version below. See [actual evidence and manual checks](docs/verification.md). Programmatic WPF/SQLite/runtime checks do not prove visual layout, tray clicks, dialogs, actual OS shutdown or the real cleanup/autostart click flows. Normal Exit drains; OS-forced termination after the bounded session-ending wait may prevent the last journal write. Only owned fixtures may be used for destructive verification.
+[Rust CI](https://github.com/DinLemon/DiskBurrow/actions/workflows/rust.yml) checks formatting, Clippy, tests, packaging and the extracted executable under a disposable standard Windows account. A workflow existing does not assert that the current run passed. [Validation evidence and pending manual checks](docs/rust-validation.md) distinguish programmatic GPUI/SQLite tests from actual desktop clicks, UAC and Windows logon. Only owned fixtures are destructive verification targets.
 
-MIT © 2026 DinLemon. Runtime/dependency components retain their upstream licenses.
+[Detailed Rust build instructions](rust/README.md). [Archived C# 0.2.2 verification](docs/legacy-csharp/verification.md).
+
+MIT © 2026 DinLemon. Dependencies retain their upstream licenses; the portable archive includes full notices in `ThirdParty/`.
