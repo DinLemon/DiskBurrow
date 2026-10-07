@@ -1,4 +1,4 @@
-DiskBurrow 0.3.0-alpha.1 - Rust preview (unsigned)
+DiskBurrow 0.3.0-alpha.2 - Rust preview (unsigned)
 
 Requires Windows 10 22H2 / Windows 11 x64 and a working Direct3D 11 driver.
 Extract the complete ZIP. Run DiskBurrow.exe as an ordinary user.

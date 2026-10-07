@@ -1,6 +1,6 @@
 # DiskBurrow Rust preview
 
-Version **0.3.0-alpha.1**, migration branch `rewrite/rust-gpui`. Stable C#/WPF
+Version **0.3.0-alpha.2**, migration branch `rewrite/rust-gpui`. Stable C#/WPF
 0.2.2 remains the published release. No Rust release replaces it yet.
 
 The five crates contain the GPUI application, full live index/map, compatible
@@ -35,7 +35,7 @@ source archives are linked in `ThirdParty/index.json`, including MPL components.
 
 ## Validation status
 
-Local Windows checks: **266 tests pass, one upstream timing test ignored**;
+Local Windows checks: **269 tests pass, one upstream timing test ignored**;
 strict Clippy and formatting pass. GPUI frame tests cover six pages, live RU/EN,
 light/dark, editable GB thresholds, pinned Save and a minimum-size long-path map.
 Native fixtures cover reparse/identity races, immutable reviewed plans, private

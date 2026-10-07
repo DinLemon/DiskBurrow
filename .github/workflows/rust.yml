@@ -16,6 +16,13 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare owned test scratch
+        shell: pwsh
+        run: |
+          $scratch = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'work/rust-test-temp'))
+          New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+          "TEMP=$scratch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$scratch" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64

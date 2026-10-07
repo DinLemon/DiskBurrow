@@ -1,6 +1,6 @@
 # Rust preview validation — 2026-10-07
 
-Candidate: **0.3.0-alpha.1**, branch `rewrite/rust-gpui`, Windows x64.
+Candidate: **0.3.0-alpha.2**, branch `rewrite/rust-gpui`, Windows x64.
 Published C#/WPF **0.2.2 is unchanged**. This is a migration candidate, not a
 claim that all desktop acceptance checks have been completed.
 
@@ -8,8 +8,8 @@ claim that all desktop acceptance checks have been completed.
 
 `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked
 -- -D warnings`; `cargo test --workspace --locked`.
-**266 passed, 0 failed, 1 ignored**: application 37, engine 12, compatible
-services 22, native cleanup 24, platform policy 10, vendored scanner 161.
+**269 passed, 0 failed, 1 ignored**: application 37, engine 12, compatible
+services 22, native cleanup 24, platform policy 10, vendored scanner 164.
 The ignored upstream timing test is retained as ignored, not counted as passing.
 
 - GPUI frame/control tests: six pages, RU/EN, light/dark, editable decimal GB,
@@ -39,6 +39,25 @@ The ignored upstream timing test is retained as ignored, not counted as passing.
 - Release uses static CRT. PE imports contain Windows OS DLLs; no .NET,
   external SQLite, VCRUNTIME or MSVCP runtime. Original blue icon and preview
   version are embedded; GPUI supplies its ordinary-user/DPI manifest.
+
+## Ordinary scan budget regression
+
+Alpha.1 charged four copies of the full path for every enumerated file, although
+ordinary leaves retain basenames in the tree/index and only the largest 100 files
+receive history paths. It also charged entries excluded by scan filters.
+Alpha.2 reserves full paths for directories and diagnostic entries, includes the
+root path once, and counts only retained entries. The 1 GiB / 20 million entry
+ceilings and rejection of incomplete results on genuine exhaustion are unchanged.
+Failures now include numeric entry and estimated-memory usage without file paths.
+
+Regression checks cover 128 files under a long root, filtered entries, long
+directory paths that genuinely exhaust the resident budget, and both hard limits.
+A read-only ordinary scan of the real C: drive reproduced the original error at
+approximately 175 MB peak working set. With the fix it completed 1,235,987 files
+and 264,460 directories in approximately 12.4 seconds at 282 MB peak working set.
+These measurements cover the scanner process, not the complete GUI/history.
+Protected/unreadable areas remain explicitly incomplete; traversal completion
+does not assert access to every object on the volume.
 
 ## Outstanding acceptance checks
 

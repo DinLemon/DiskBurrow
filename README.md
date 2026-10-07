@@ -30,7 +30,7 @@
 
 ## Rust migration preview
 
-The `rewrite/rust-gpui` branch contains **0.3.0-alpha.1**, a native Rust/GPUI
+The `rewrite/rust-gpui` branch contains **0.3.0-alpha.2**, a native Rust/GPUI
 candidate. Stable **0.2.2** above remains the published download. See
 [Rust build instructions and validation limits](rust/README.md); manual desktop,
 Rust UAC and logon/tray parity checks are still pending. This branch does not

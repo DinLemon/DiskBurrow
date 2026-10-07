@@ -778,7 +778,8 @@ mod tests {
     fn native_local_volume_and_battery_are_readonly() {
         assert!(!is_local_path(r"\\server\share"));
         assert!(!is_local_path(r"E:\NUL"));
-        let space = volume_space("E:\\").unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let space = volume_space(fixture.path().to_str().unwrap()).unwrap();
         assert!(space.total_bytes > 0);
         assert!(space.free_bytes >= 0 && space.free_bytes <= space.total_bytes);
         let _ = on_battery();

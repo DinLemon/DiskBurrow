@@ -329,9 +329,17 @@ struct WalkContext {
 
 impl WalkContext {
     fn retain(&self, name_bytes: usize, path_bytes: usize) -> bool {
-        let entries = self.retained_entries.fetch_add(1, Ordering::Relaxed) + 1;
-        // Include the flat live-index conversion and path-bearing history projection beside the tree.
-        let charge = 512 + 4 * name_bytes + 4 * path_bytes;
+        // Node vectors, conversion to the flat index, names and per-entry scratch.
+        // Ordinary leaves keep basenames. Only directories and diagnostic entries
+        // retain full paths in the completed history projection.
+        self.reserve(1, 512 + 4 * name_bytes + 4 * path_bytes)
+    }
+
+    fn reserve(&self, additional_entries: usize, charge: usize) -> bool {
+        let entries = self
+            .retained_entries
+            .fetch_add(additional_entries, Ordering::Relaxed)
+            + additional_entries;
         let bytes = self.retained_bytes.fetch_add(charge, Ordering::Relaxed) + charge;
         if entries > self.options.maximum_entries || bytes > self.options.maximum_resident_bytes {
             self.budget_exhausted.store(true, Ordering::Relaxed);
@@ -929,6 +937,8 @@ fn scan_on_pool(
             format!("{} is not a directory", root.display()),
         ));
     }
+    // The root's fixed entry reserve is initialized with the context.
+    context.reserve(0, 4 * file_name(root).len() + 4 * root.as_os_str().len());
     let resolved = root.canonicalize().ok();
     let canonical = resolved.as_deref().unwrap_or(root);
     let mut never = crate::space::never_scanned(root, canonical);
@@ -1044,9 +1054,14 @@ fn scan_on_pool(
         while let Some(mut entry) = pending.pop() {
             pending.append(&mut entry.children);
         }
-        return Err(io::Error::other(
-            "Scan metadata exceeds its entry or resident memory limit; no completed result was published",
-        ));
+        return Err(io::Error::other(format!(
+            "Scan metadata exceeds its entry or resident memory limit; no completed result was published \
+             (entries: {}/{}, estimated resident bytes: {}/{})",
+            context.retained_entries.load(Ordering::Relaxed),
+            context.options.maximum_entries,
+            context.retained_bytes.load(Ordering::Relaxed),
+            context.options.maximum_resident_bytes,
+        )));
     }
     Ok(finish_tree(node, &context.options, pool))
 }
@@ -1165,14 +1180,11 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
                 }
                 match entry {
                     Ok(mut entry) => {
-                        if !context.retain(
-                            entry.name().len(),
-                            dir.path.as_os_str().len() + entry.name().len() + 1,
-                        ) {
-                            break;
-                        }
                         match context.classify(&dir.path, &mut entry) {
                             Classified::Subdirectory { path, name } => {
+                                if !context.retain(name.len(), path.as_os_str().len()) {
+                                    break;
+                                }
                                 tally.dirs += 1;
                                 subdirs.push(Arc::new(PendingDir::new(
                                     path,
@@ -1182,6 +1194,19 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
                                 )));
                             }
                             Classified::Entry(node) => {
+                                let retains_path = node.kind == NodeKind::Directory
+                                    || node.kind == NodeKind::Symlink
+                                    || node.read_error
+                                    || !node.allocation_known
+                                    || node.attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) != 0;
+                                let path_bytes = if retains_path {
+                                    dir.path.as_os_str().len() + node.name.len() + 1
+                                } else {
+                                    0
+                                };
+                                if !context.retain(node.name.len(), path_bytes) {
+                                    break;
+                                }
                                 tally.add(&node);
                                 leaves.push(node);
                             }
@@ -1794,11 +1819,70 @@ mod tests {
     }
 
     #[test]
+    fn deep_file_paths_do_not_consume_retained_metadata_for_every_leaf() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("nested-directory-".repeat(10));
+        fs::create_dir(&root).unwrap();
+        for index in 0..128 {
+            write(&root, &format!("f{index}.bin"), 1);
+        }
+        // Leaves retain basenames, not copies of this long parent path. Allow
+        // ample room for 128 nodes, their live-index conversion and one directory.
+        let tree = scan(
+            &root,
+            ScanOptions {
+                maximum_resident_bytes: 128 * 1024,
+                ..options()
+            },
+        )
+        .expect("A long root path must not inflate every leaf's resident budget");
+        assert_eq!(tree.files, 128);
+        assert_eq!(tree.logical, 128);
+        assert_eq!(tree.children.len(), 128);
+    }
+
+    #[test]
+    fn filtered_entries_do_not_consume_the_retained_entry_budget() {
+        let temp = TempDir::new().unwrap();
+        for index in 0..10 {
+            write(temp.path(), &format!(".hidden{index}"), 1);
+        }
+        let tree = scan(
+            temp.path(),
+            ScanOptions {
+                include_hidden: false,
+                maximum_entries: 1,
+                ..options()
+            },
+        )
+        .expect("Only the root is retained after hidden files are filtered");
+        assert!(tree.children.is_empty());
+        assert_eq!(tree.files, 0);
+    }
+
+    #[test]
+    fn directory_paths_still_count_towards_the_resident_budget() {
+        let temp = TempDir::new().unwrap();
+        for index in 0..40 {
+            fs::create_dir(temp.path().join(format!("{index}-{}", "d".repeat(180)))).unwrap();
+        }
+        let error = scan(
+            temp.path(),
+            ScanOptions {
+                maximum_resident_bytes: 64 * 1024,
+                ..options()
+            },
+        )
+        .expect_err("Directory paths are retained in history and must remain bounded");
+        assert!(error.to_string().contains("estimated resident bytes:"));
+    }
+
+    #[test]
     fn bounded_walk_rejects_entry_and_resident_exhaustion_instead_of_publishing_partial_totals() {
         let temp = TempDir::new().unwrap();
         write(temp.path(), "a.bin", 1);
         write(temp.path(), "b.bin", 1);
-        for limits in [(1, 1024 * 1024), (100, 1)] {
+        for limits in [(1, 1024 * 1024), (100, 512)] {
             let result = scan(
                 temp.path(),
                 ScanOptions {
