@@ -7,6 +7,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: rust-preview-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   validate:
     runs-on: windows-latest
@@ -38,23 +41,7 @@ jobs:
       - name: Verify freshly extracted native executable
         shell: pwsh
         run: |
-          $archive = Get-Item artifacts/rust-preview/*.zip
-          $expected = (Get-Content -LiteralPath ($archive.FullName + '.sha256')).Split(' ')[0]
-          if ((Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Archive checksum mismatch.' }
-          New-Item -ItemType Directory -Path work/rust-extracted,work/rust-proof/scan | Out-Null
-          Expand-Archive -LiteralPath $archive.FullName -DestinationPath work/rust-extracted
-          'DiskBurrow disposable fixture' | Set-Content work/rust-proof/scan/small.txt
-          [IO.File]::WriteAllBytes((Join-Path (Resolve-Path work/rust-proof/scan).Path 'large.bin'), [byte[]]::new(2097152))
-          $exe = (Resolve-Path work/rust-extracted/DiskBurrow.exe).Path
-          $fixture = (Resolve-Path work/rust-proof).Path
-          $argsText = '--data-dir "' + $fixture + '\data" --scan-root "' + $fixture + '\scan" --verify-runtime "' + $fixture + '\runtime.json"'
-          $process = Start-Process -FilePath $exe -ArgumentList $argsText -WindowStyle Hidden -PassThru
-          if (-not $process.WaitForExit(120000)) { $process.Kill(); throw 'Verification timed out.' }
-          if ($process.ExitCode -ne 0) { throw 'Extracted executable verification failed.' }
-          $proof = Get-Content work/rust-proof/runtime.json -Raw | ConvertFrom-Json
-          if (-not $proof.ordinary_user -or -not $proof.traversal_completed -or $proof.largest_files -ne 2 -or $proof.map_tiles -lt 1 -or $proof.appearances.Count -ne 4) { throw 'Runtime proof incomplete.' }
-          $manifest = Get-Content work/rust-extracted/manifest.json -Raw | ConvertFrom-Json
-          if ((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.executable_sha256) { throw 'Executable checksum mismatch.' }
+          ./scripts/verify-rust-ci.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: rust-preview
