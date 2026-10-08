@@ -3,6 +3,7 @@ mod cleanup;
 mod environment;
 mod native;
 mod paths;
+mod reclaim;
 pub use cleanup::*;
 pub use diskburrow_services::{FileIdentity, FileObservation as NativeFileObservation};
 pub use environment::{
@@ -11,3 +12,4 @@ pub use environment::{
 };
 pub use native::{NativeFileApi, NativeHandle, WindowsNativeFileApi, inspect, is_cloud};
 pub use paths::{equals_path, is_within, normalize_local_path};
+pub use reclaim::{ManualReclaimProjection, project_manual_reclaim};

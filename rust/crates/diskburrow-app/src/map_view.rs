@@ -82,8 +82,8 @@ use crate::{
 use gpui_kit::{
     BorderStyle, Bounds, ContentMask, Context, Corners, Edges, Font, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, NavigationDirection, ParentElement as _, Point, ScrollDelta,
-    ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement as _, Styled,
+    MouseMoveEvent, MouseUpEvent, NavigationDirection, ParentElement as _, PathBuilder, Point,
+    ScrollDelta, ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement as _, Styled,
     TestSupportExt as _, TextAlign, TextRun, canvas, div, px, quad,
 };
 
@@ -266,6 +266,29 @@ pub fn canvas_view(
                                     BorderStyle::Solid
                                 },
                             ));
+                            if tile.reclaim {
+                                let width = rect.size.width.as_f32();
+                                let height = rect.size.height.as_f32();
+                                let step = ((width + height) / 96.).max(14.);
+                                let mut hatch = PathBuilder::stroke(px(1.));
+                                let mut offset = step;
+                                while offset < width + height {
+                                    let start_x = (offset - height).max(0.);
+                                    let start_y = (offset - width).max(0.);
+                                    hatch.move_to(Point::new(
+                                        rect.left() + px(start_x),
+                                        rect.top() + px(offset.min(height)),
+                                    ));
+                                    hatch.line_to(Point::new(
+                                        rect.left() + px(offset.min(width)),
+                                        rect.top() + px(start_y),
+                                    ));
+                                    offset += step;
+                                }
+                                if let Ok(path) = hatch.build() {
+                                    window.paint_path(path, palette.text.opacity(0.16));
+                                }
+                            }
                             if rect.size.width > px(55.) && rect.size.height > px(20.) {
                                 let font = Font {
                                     family: "Segoe UI".into(),
@@ -314,26 +337,22 @@ pub fn canvas_view(
             .inset_0(),
         )
 }
+pub fn category_color(category: u8) -> Hsla {
+    gpui_kit::rgb(match category {
+        0 => 0x397c70,
+        1 => 0x805591,
+        2 => 0x465fa1,
+        3 => 0x5d7554,
+        4 => 0x946342,
+        5 => 0x91576e,
+        6 => 0x9a8343,
+        7 => 0x3b7991,
+        _ => 0x456779,
+    })
+    .into()
+}
 fn tile_color(tile: &MapTile) -> Hsla {
-    let extension = std::path::Path::new(&tile.path)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let color = if tile.directory {
-        0x365775
-    } else {
-        match extension.as_str() {
-            "mp4" | "mkv" | "mp3" | "wav" | "flac" => 0x805591,
-            "png" | "jpg" | "jpeg" | "webp" => 0x397c70,
-            "zip" | "7z" | "rar" | "gz" => 0x946342,
-            "exe" | "dll" | "msi" => 0x465fa1,
-            "pdf" | "docx" | "txt" | "md" => 0x5d7554,
-            _ => 0x456779,
-        }
-    };
-    gpui_kit::Hsla::from(gpui_kit::rgb(color))
-        .opacity((1. - tile.depth.min(6) as f32 * 0.045).max(0.65))
+    category_color(tile.category).opacity((1. - tile.depth.min(6) as f32 * 0.045).max(0.65))
 }
 #[cfg(test)]
 mod tests {

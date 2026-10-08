@@ -69,7 +69,6 @@ pub struct Row {
 #[derive(Clone, Debug)]
 pub struct MapTile {
     pub index: usize,
-    pub path: String,
     pub name: String,
     pub x: f32,
     pub y: f32,
@@ -80,6 +79,8 @@ pub struct MapTile {
     pub covered: bool,
     pub matched: bool,
     pub depth: u32,
+    pub category: u8,
+    pub reclaim: bool,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Review {
@@ -111,6 +112,7 @@ pub struct UiView {
     pub cleanup_warnings: Vec<Row>,
     pub cleanup_results: Vec<Row>,
     pub observed_caches: Vec<Row>,
+    pub recommendations: Vec<Row>,
     pub cleanup_summary: String,
     pub cleanup_categories: Vec<String>,
     pub cleanup_category: String,
@@ -128,6 +130,7 @@ pub struct UiView {
     pub map_has_data: bool,
     pub focused_path: String,
     pub focused_summary: String,
+    pub git_summary: String,
     pub drives: Vec<(String, String)>,
     pub can_cleanup: bool,
     pub can_manual: bool,

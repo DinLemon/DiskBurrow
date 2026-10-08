@@ -80,6 +80,7 @@ pub fn gb(bytes: i64, language: &str) -> String {
 pub fn text(language: &str, key: &str) -> String {
     TRANSLATIONS
         .iter()
+        .chain(EXTRA_TRANSLATIONS.iter())
         .find(|(candidate, _, _)| *candidate == key)
         .map_or_else(
             || key.to_owned(),
@@ -96,6 +97,137 @@ pub fn text(language: &str, key: &str) -> String {
 }
 
 // Imported verbatim from the original 0.2.2 WPF locale resources.
+const EXTRA_TRANSLATIONS: &[(&str, &str, &str)] = &[
+    ("Insights.Title", "Стоит посмотреть", "Worth a look"),
+    (
+        "Insights.Note",
+        "Подсказки по именам и возрасту. Проверьте содержимое; это не разрешение на удаление.",
+        "Hints from names and age. Inspect contents; these do not authorize deletion.",
+    ),
+    ("Insights.Coverage", "Неполные данные", "Incomplete data"),
+    ("Insights.Worktrees", "Рабочие деревья", "Worktrees"),
+    ("Insights.Stale", "Старый эксперимент", "Old experiment"),
+    ("Insights.Days", "дней", "days"),
+    ("Insights.Observed", "Замеченные кеши", "Observed caches"),
+    ("Category.Code", "Код", "Code"),
+    ("Category.AgentScratch", "Данные агентов", "Agent scratch"),
+    ("Category.Toolchain", "Инструменты", "Toolchains"),
+    ("Category.Synced", "Синхронизация", "Synced"),
+    ("Category.Git", "Git", "Git"),
+    ("Category.Media", "Медиа", "Media"),
+    ("Category.Documents", "Документы", "Documents"),
+    ("Category.Cache", "Кеш", "Cache"),
+    ("Category.Other", "Прочее", "Other"),
+    (
+        "Reclaim.Regenerable",
+        "Воссоздаваемый кеш",
+        "Regenerable cache",
+    ),
+    (
+        "Reclaim.SyncHistory",
+        "История синхронизации",
+        "Sync history",
+    ),
+    ("Reclaim.PackageStore", "Хранилище пакетов", "Package store"),
+    ("Reclaim.BuildOutput", "Результаты сборки", "Build output"),
+    (
+        "Reclaim.Reinstallable",
+        "Можно переустановить",
+        "Reinstallable",
+    ),
+    ("Reclaim.SandboxLayers", "Слои песочниц", "Sandbox layers"),
+    ("Reclaim.Snapshots", "Снимки", "Snapshots"),
+    ("Reclaim.Trash", "Корзина", "Trash"),
+    ("Reclaim.Temporary", "Временные данные", "Temporary data"),
+    (
+        "Reclaim.Hatch",
+        "Штриховка: возможна очистка; сначала проверьте содержимое",
+        "Hatch: potentially reclaimable; inspect contents first",
+    ),
+    (
+        "Reclaim.Known",
+        "Известное место на текущем томе",
+        "Known reclaim on current volume",
+    ),
+    (
+        "Reclaim.Excluded",
+        "Исключено: жёсткие ссылки / неизвестно / другой том",
+        "Excluded: hardlinks / unknown / other volume",
+    ),
+    (
+        "Reclaim.Note",
+        "Оценка при успешном удалении. Изменение свободного места зависит и от других процессов.",
+        "Estimate if deletion succeeds. Volume free-space change also reflects other processes.",
+    ),
+    (
+        "Reclaim.Actual",
+        "Изменение свободного места на томе",
+        "Volume free-space change",
+    ),
+    ("Git.Checking", "Git: проверка…", "Git: checking…"),
+    (
+        "Git.NotRepository",
+        "Git: не корень репозитория",
+        "Git: not a repository root",
+    ),
+    (
+        "Git.Unknown",
+        "Git: состояние неизвестно",
+        "Git: state unknown",
+    ),
+    ("Git.Changed", "изменено", "changed"),
+    ("Git.Untracked", "не отслеживается", "untracked"),
+    ("Git.Stash", "stash", "stash"),
+    ("Git.Ahead", "не отправлено", "ahead"),
+    ("Git.Unavailable", "Git не установлен", "Git unavailable"),
+    (
+        "Git.Unsafe",
+        "исполняемая или подключаемая конфигурация",
+        "executable or included configuration",
+    ),
+    ("Git.Failed", "ошибка проверки", "inspection failed"),
+    (
+        "Git.Timeout",
+        "истекло время проверки",
+        "inspection timed out",
+    ),
+    (
+        "Git.OutputLimit",
+        "превышен предел вывода",
+        "output limit exceeded",
+    ),
+    ("Git.Cancelled", "проверка отменена", "inspection cancelled"),
+    (
+        "Git.NoUpstream",
+        "нет upstream; неотправленные коммиты неизвестны",
+        "no upstream; ahead commits unknown",
+    ),
+    (
+        "Git.Detached",
+        "detached HEAD; неотправленные коммиты неизвестны",
+        "detached HEAD; ahead commits unknown",
+    ),
+    (
+        "Git.Unsupported",
+        "неподдерживаемый репозиторий",
+        "unsupported repository",
+    ),
+    (
+        "Git.ReviewNote",
+        "Git проверен повторно для выбранных корней. Данные могут измениться; счётчики не разрешают удаление.",
+        "Git rechecked for selected roots. Data may change; counters do not authorize deletion.",
+    ),
+    (
+        "Git.ReviewLimit",
+        "Часть выбранных корней не проверена: максимум 8 за просмотр",
+        "Some selected roots were not checked: maximum 8 per review",
+    ),
+    (
+        "Manual.RefreshFailed",
+        "Удаление завершено; повторное сканирование не удалось",
+        "Deletion completed; refresh scan failed",
+    ),
+];
 const TRANSLATIONS: &[(&str, &str, &str)] = &[
     (
         "Cleanup.Cancelled",

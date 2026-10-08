@@ -304,6 +304,7 @@ fn taskowned_late_child_and_partial_cancellation_survive() {
         .unwrap();
     let report = svc.execute_manual(plan.id, true, &stopped).unwrap();
     assert!(report.was_cancelled);
+    assert!(report.free_space_delta_available);
     assert_eq!(plan.entries.len(), report.items.len());
     assert!(
         report
@@ -817,6 +818,7 @@ fn taskowned_manual_review_is_readonly_deduplicated_singleuse_and_neighbours_sur
     assert!(svc.execute_manual(plan.id, false, &cancel).is_err());
     let report = svc.execute_manual(plan.id, true, &cancel).unwrap();
     assert_eq!(3, report.items.len());
+    assert!(report.free_space_delta_available);
     assert!(
         report
             .items
@@ -903,6 +905,7 @@ fn taskowned_precancelled_execution_audits_every_item() {
     let report = svc.execute_manual(plan.id, true, &cancel).unwrap();
     assert!(report.was_cancelled);
     assert_eq!(plan.entries.len(), report.items.len());
+    assert!(report.free_space_delta_available);
     assert!(report.items.iter().all(|x| x.audit.is_some()));
     assert!(std::path::Path::new(&file).exists());
 }
@@ -919,6 +922,34 @@ fn taskowned_metadata_has_stable_identity_and_hardlink_allocation() {
     assert_eq!(2, a.link_count);
     assert_eq!(17, a.logical_bytes);
     assert!(a.allocated_bytes.is_some());
+}
+
+#[test]
+fn taskowned_reclaim_excludes_complete_and_external_native_hardlinks_without_overlap() {
+    let f = Fixture::new();
+    let selected = f.file(r"selected\file");
+    fs::write(&selected, vec![5u8; 65_536]).unwrap();
+    let internal = f.path(r"selected\alias");
+    fs::hard_link(&selected, &internal).unwrap();
+    let svc = f.service();
+    let cancel = Cancellation::default();
+    let plan = svc
+        .preview_manual(&[f.path("selected"), internal], &cancel)
+        .unwrap();
+    let observation = inspect(&selected).unwrap();
+    assert!(observation.allocated_bytes.unwrap() > 0);
+    let volume = observation.identity.unwrap().volume;
+    let estimate = project_manual_reclaim(&plan, volume);
+    assert_eq!(estimate.known_reclaim_bytes, 0);
+    assert_eq!(estimate.reclaimable_files, 0);
+    assert_eq!(estimate.excluded_hardlink_files, 1);
+    let outside = f.path("outside-alias");
+    fs::hard_link(&selected, &outside).unwrap();
+    let plan = svc.preview_manual(&[f.path("selected")], &cancel).unwrap();
+    let estimate = project_manual_reclaim(&plan, volume);
+    assert_eq!(estimate.known_reclaim_bytes, 0);
+    assert_eq!(estimate.excluded_hardlink_files, 1);
+    assert!(std::path::Path::new(&outside).exists());
 }
 
 #[test]

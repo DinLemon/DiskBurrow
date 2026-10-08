@@ -1,4 +1,43 @@
-# Rust client validation — 2026-10-07
+# Rust client validation — 2026-10-08
+
+## Alpha.4 insights candidate
+
+The alpha.4 development candidate adds indexed categories/reclaim hatching,
+bounded recommendations, safe local Git inspection, conservative native reclaim
+projection, measured volume changes and post-attempt refresh with report retention.
+The published alpha.3 and stable C#/WPF 0.2.2 assets remain unchanged.
+
+Locked Windows workspace verification: **328 passed, 0 failed, 6 ignored**
+(application 68; engine 25; services 28; native/platform 43; vendored core 164).
+Five ignored Git helper entrypoints are invoked and verified by their parent
+tests; the remaining ignored test is the existing upstream timing test.
+`cargo fmt --all --check` and workspace/all-target Clippy with `-D warnings` pass.
+
+- Real generated Git repositories cover changed/untracked/stash/ahead,
+  no upstream, missing Git, unsafe filters/includes, configuration changes and
+  poisoned environment. Windows job tests prove cancellation/timeout kill the
+  process tree, output is bounded and repository-selected external programs
+  cannot start. Git reads only the selected checkout root and never fetches.
+- Runtime tests repeat Git checks after on-disk changes, reject cancelled/stale
+  publications, delete only generated fixtures, refresh the accepted snapshot,
+  and retain the actual report and SQLite journal when refresh fails.
+- Engine/native tests cover inherited/contextual classification, nonoverlap,
+  incomplete coverage, bounded recommendations and excluded hardlink/unknown/
+  foreign identities. Every multi-link identity is excluded from physical
+  projection because existing per-name link-count revalidation can prevent
+  removal of a subsequent reviewed alias. Native deletion authority is unchanged.
+- GPUI frame tests at 880×600 cover localized recommendations in light/dark,
+  recommendation navigation without marking/deletion, six-page settings/map
+  controls and the existing minimum 180 px map area with long paths.
+
+These are programmatic frames and generated native fixtures, not manual desktop
+acceptance. Portable archive/extracted-EXE evidence is recorded separately with
+its exact source commit, SHA-256 and verification scope after building. UAC
+approval/denial, tray clicks, logon/autostart and manual visual acceptance remain
+pending. Navigation/age/depth, system theme/UI scaling and selected-path text/
+prompt export are remaining port phases.
+
+## Previous alpha.3 baseline
 
 Current version: **0.3.0-alpha.3**, Windows x64. The user authorized merging Rust as the
 primary client in `main`, accepting the disclosed preview limitations. That

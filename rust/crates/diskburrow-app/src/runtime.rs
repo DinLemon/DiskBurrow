@@ -1,4 +1,5 @@
 //! UI-owned state. Workers publish through bounded operation identities; no worker touches GPUI.
+use crate::git_inspection::{self, GitInspection};
 use crate::{
     contract::*,
     locale::{gb, parse_threshold, text},
@@ -7,11 +8,14 @@ use crate::{
 };
 use anyhow::{Result, bail, ensure};
 use chrono::{DateTime, Local, Utc};
-use diskburrow_engine::{LiveIndex, MapMetric, MapNavigation, OTHERS_INDEX};
+use diskburrow_engine::{
+    EntryClassification, LiveIndex, MapMetric, MapNavigation, OTHERS_INDEX, Recommendation,
+};
 use diskburrow_services::*;
 use diskburrow_windows::{
-    Cancellation, CleanupPlan, CleanupService, ManualDeletePlan, RuleEnvironment,
-    WindowsRuleEnvironment, is_within, normalize_local_path,
+    Cancellation, CleanupPlan, CleanupService, ManualDeletePlan, ManualReclaimProjection,
+    RuleEnvironment, WindowsRuleEnvironment, is_within, normalize_local_path,
+    project_manual_reclaim,
 };
 use disktree_core::scan::{ScanHandle, ScanOptions, ScanProgress as CoreProgress};
 use std::{
@@ -36,6 +40,17 @@ struct Active {
     join: JoinHandle<()>,
     automatic_request: Option<(u64, String)>,
     scan_root: Option<String>,
+    deletion_root: Option<String>,
+}
+struct GitJob {
+    generation: u64,
+    cancel: Cancellation,
+    join: JoinHandle<()>,
+}
+#[derive(Default)]
+struct Analysis {
+    classifications: Vec<EntryClassification>,
+    recommendations: Vec<Recommendation>,
 }
 enum Work {
     Scan {
@@ -43,9 +58,15 @@ enum Work {
         snapshot: Arc<ScanSnapshot>,
         history: Vec<ScanSnapshot>,
         history_error: Option<String>,
+        analysis: Analysis,
     },
     CleanupPreview(CleanupPlan),
-    ManualPreview(ManualDeletePlan),
+    ManualPreview {
+        plan: ManualDeletePlan,
+        projection: Option<ManualReclaimProjection>,
+        git: Vec<(String, GitInspection)>,
+        git_limited: bool,
+    },
     Deleted(CleanupReport),
     SettingsSaved(AppSettings),
     Exported,
@@ -58,6 +79,11 @@ enum Work {
 enum Event {
     Finished(u64, Result<Work>),
     Progress(u64, Arc<CoreProgress>),
+    GitFinished {
+        generation: u64,
+        path: String,
+        inspection: GitInspection,
+    },
 }
 struct MapCache {
     key: (u64, u32, u32),
@@ -72,6 +98,12 @@ pub struct Runtime {
     tx: Sender<Event>,
     rx: Receiver<Event>,
     live: Option<Arc<LiveIndex>>,
+    analysis: Analysis,
+    git_generation: u64,
+    git_job: Option<GitJob>,
+    git_desired: Option<(u64, String)>,
+    git_result: Option<(String, GitInspection)>,
+    refreshing_deletion: bool,
     snapshot: Option<Arc<ScanSnapshot>>,
     known_cache_roots: (String, String),
     volume_observation: Option<VolumeObservation>,
@@ -145,6 +177,7 @@ impl Runtime {
             cleanup_warnings: vec![],
             cleanup_results: vec![],
             observed_caches: vec![],
+            recommendations: vec![],
             cleanup_summary: String::new(),
             cleanup_categories: vec![],
             cleanup_category: "All".into(),
@@ -162,6 +195,7 @@ impl Runtime {
             map_has_data: false,
             focused_path: String::new(),
             focused_summary: String::new(),
+            git_summary: String::new(),
             drives: platform::list_drives(),
             can_cleanup: false,
             can_manual: false,
@@ -175,6 +209,12 @@ impl Runtime {
             tx,
             rx,
             live: None,
+            analysis: Analysis::default(),
+            git_generation: 0,
+            git_job: None,
+            git_desired: None,
+            git_result: None,
+            refreshing_deletion: false,
             snapshot: None,
             volume_observation: None,
             known_cache_roots: {
@@ -235,6 +275,7 @@ impl Runtime {
     pub fn should_exit(&self) -> bool {
         self.exiting
             && !self.coordinator.is_busy()
+            && self.git_job.is_none()
             && self.journal_workers.iter().all(JoinHandle::is_finished)
     }
     fn label(&self, key: &str) -> String {
@@ -269,6 +310,73 @@ impl Runtime {
                 progress.cancel();
             }
         }
+        if let Some(job) = &self.git_job {
+            job.cancel.cancel();
+        }
+        self.git_desired = None;
+    }
+    fn clear_git(&mut self) {
+        self.git_generation = self.git_generation.wrapping_add(1);
+        self.git_desired = None;
+        self.git_result = None;
+        if let Some(job) = &self.git_job {
+            job.cancel.cancel();
+        }
+    }
+    fn select_git(&mut self) {
+        self.clear_git();
+        if self.exiting {
+            return;
+        }
+        if let Some(index) = &self.live
+            && let Some(focused) = self.nav.focused
+            && let Some(entry) = index.entries.get(focused)
+            && entry.directory
+            && entry.attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) == 0
+        {
+            self.git_desired = Some((self.git_generation, index.path(focused)));
+        }
+        self.start_git_job();
+    }
+    fn start_git_job(&mut self) {
+        if self.git_job.is_some() || self.exiting {
+            return;
+        }
+        let Some((generation, path)) = self.git_desired.take() else {
+            return;
+        };
+        let cancel = Cancellation::default();
+        let child = cancel.clone();
+        let tx = self.tx.clone();
+        match thread::Builder::new()
+            .name("diskburrow-git".into())
+            .spawn(move || {
+                let inspection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    git_inspection::inspect(&path, &child)
+                }))
+                .unwrap_or(GitInspection {
+                    repository: git_inspection::RepositoryState::Unknown,
+                    changed: None,
+                    untracked: None,
+                    stash: None,
+                    ahead: None,
+                    uncertainty: Some(git_inspection::GitUncertainty::CommandFailed),
+                });
+                let _ = tx.send(Event::GitFinished {
+                    generation,
+                    path,
+                    inspection,
+                });
+            }) {
+            Ok(join) => {
+                self.git_job = Some(GitJob {
+                    generation,
+                    cancel,
+                    join,
+                })
+            }
+            Err(_) => self.view.git_summary = self.label("Git.Unknown"),
+        }
     }
     fn spawn(
         &mut self,
@@ -282,6 +390,11 @@ impl Runtime {
         let scan_root = match &purpose {
             Purpose::Scan { root, .. } => Some(root.clone()),
             _ => None,
+        };
+        let deletion_root = if purpose == Purpose::Cleanup {
+            self.snapshot.as_ref().map(|s| s.root.clone())
+        } else {
+            None
         };
         let Admission::Started(token) = self.coordinator.begin(purpose) else {
             return;
@@ -311,6 +424,7 @@ impl Runtime {
                     join,
                     automatic_request: None,
                     scan_root,
+                    deletion_root,
                 });
                 self.view.busy = true;
                 self.view.error = None;
@@ -335,6 +449,7 @@ impl Runtime {
             Command::SetRoot(root) => {
                 if root != self.view.root {
                     self.invalidate_review();
+                    self.clear_git();
                     self.marks.clear();
                     self.view.root = root;
                     self.history.clear();
@@ -436,32 +551,38 @@ impl Runtime {
                 if let Some(live) = &self.live {
                     self.nav.navigate(live, index);
                 }
+                self.select_git();
                 self.map_changed();
             }
             Command::MapBack => {
                 self.nav.back();
+                self.select_git();
                 self.map_changed();
             }
             Command::MapForward => {
                 self.nav.forward();
+                self.select_git();
                 self.map_changed();
             }
             Command::MapUp => {
                 if let Some(live) = &self.live {
                     self.nav.up(live);
                 }
+                self.select_git();
                 self.map_changed();
             }
             Command::MapRoot => {
                 if let Some(live) = &self.live {
                     self.nav.root(live);
                 }
+                self.select_git();
                 self.map_changed();
             }
             Command::MapFocus(index) => {
                 if let Some(live) = &self.live {
                     self.nav.focus(live, index);
                 }
+                self.select_git();
             }
             Command::MapMark(index) => {
                 if let Some(live) = &self.live
@@ -647,6 +768,7 @@ impl Runtime {
             return;
         }
         self.invalidate_review();
+        self.clear_git();
         let started = Utc::now();
         let data = self.data_dir.clone();
         self.spawn(
@@ -687,11 +809,17 @@ impl Runtime {
                 let mut store = SqliteHistoryStore::new(StorageBudget::new(data));
                 let history = store.load_recent(&snapshot.root, 30);
                 let history_error = store.last_user_message;
+                let analysis = Analysis {
+                    classifications: index.classifications(),
+                    recommendations: index.recommendations(Utc::now().timestamp(), 100),
+                };
+                ensure!(!cancel.is_cancelled(), "Cancelled");
                 Ok(Work::Scan {
                     index: Arc::new(index),
                     snapshot,
                     history,
                     history_error,
+                    analysis,
                 })
             },
         );
@@ -723,10 +851,27 @@ impl Runtime {
         paths.sort();
         let service = self.service.clone();
         self.view.review = None;
+        let root = self.snapshot.as_ref().map(|snapshot| snapshot.root.clone());
         self.spawn(Purpose::Review, "Status.Analyzing", move |cancel, _, _| {
-            Ok(Work::ManualPreview(
-                service.preview_manual(&paths, &cancel)?,
-            ))
+            let plan = service.preview_manual(&paths, &cancel)?;
+            let projection = root
+                .as_deref()
+                .and_then(|root| diskburrow_windows::inspect(root).ok())
+                .and_then(|file| file.identity)
+                .map(|identity| project_manual_reclaim(&plan, identity.volume));
+            let mut git = Vec::new();
+            for path in plan.roots.iter().take(8) {
+                ensure!(!cancel.is_cancelled(), "Cancelled");
+                git.push((path.clone(), git_inspection::inspect(path, &cancel)));
+            }
+            ensure!(!cancel.is_cancelled(), "Cancelled");
+            let git_limited = plan.roots.len() > 8;
+            Ok(Work::ManualPreview {
+                plan,
+                projection,
+                git,
+                git_limited,
+            })
         });
     }
     fn analyze_cleanup(&mut self) {
@@ -888,6 +1033,29 @@ impl Runtime {
         }
         while let Ok(event) = self.rx.try_recv() {
             match event {
+                Event::GitFinished {
+                    generation,
+                    path,
+                    inspection,
+                } => {
+                    let publish = if self
+                        .git_job
+                        .as_ref()
+                        .is_some_and(|job| job.generation == generation)
+                    {
+                        let job = self.git_job.take().unwrap();
+                        let publish = !job.cancel.is_cancelled();
+                        let _ = job.join.join();
+                        publish
+                    } else {
+                        false
+                    };
+                    if publish && generation == self.git_generation && !self.exiting {
+                        self.git_result = Some((path, inspection));
+                        dirty = true;
+                    }
+                    self.start_git_job();
+                }
                 Event::Progress(token, progress) => {
                     if let Some(active) = &mut self.active
                         && active.token == token
@@ -952,12 +1120,31 @@ impl Runtime {
                             self.map_changed();
                             self.journal_cleanup(report);
                             self.status("Manual.Stale");
+                            if let Some(root) = active.deletion_root
+                                && !self.exiting
+                            {
+                                self.view.root = root;
+                                self.start_scan(false);
+                                self.refreshing_deletion = self.view.busy;
+                            }
                         }
                         Ok(work @ Work::SettingsSaved(_)) => self.accept(work),
                         Ok(work) if publish => self.accept(work),
                         Ok(_) => self.status("Status.Cancelled"),
                         Err(_) if cancelled => self.status("Status.Cancelled"),
-                        Err(error) => self.error(error),
+                        Err(error) => {
+                            if self.refreshing_deletion && active.scan_root.is_some() {
+                                self.error(format!(
+                                    "{}: {error}",
+                                    self.label("Manual.RefreshFailed")
+                                ));
+                            } else {
+                                self.error(error);
+                            }
+                        }
+                    }
+                    if active.scan_root.is_some() {
+                        self.refreshing_deletion = false;
                     }
                 }
             }
@@ -1017,12 +1204,15 @@ impl Runtime {
                 snapshot,
                 history,
                 history_error,
+                analysis,
             } => {
                 let previous = history.first().cloned();
                 self.history = history;
                 self.history_selection = None;
                 self.view.root = snapshot.root.clone();
                 self.live = Some(index);
+                self.analysis = analysis;
+                self.clear_git();
                 self.snapshot = Some(snapshot.clone());
                 self.nav = MapNavigation::new();
                 self.marks.clear();
@@ -1050,8 +1240,13 @@ impl Runtime {
                 self.last_report = None;
                 self.status("Status.Ready");
             }
-            Work::ManualPreview(plan) => {
-                let summary = format!(
+            Work::ManualPreview {
+                plan,
+                projection,
+                git,
+                git_limited,
+            } => {
+                let mut summary = format!(
                     "{}: {} · {}: {} · {}",
                     self.label("Manual.Files"),
                     plan.file_count(),
@@ -1059,7 +1254,18 @@ impl Runtime {
                     plan.directory_count(),
                     gb(plan.estimated_data_bytes(), &self.view.settings.language)
                 );
-                let warnings = plan
+                summary.push_str(&format!(
+                    " · {}: {}",
+                    self.label("Reclaim.Known"),
+                    projection.as_ref().map_or_else(
+                        || self.label("Unknown"),
+                        |projection| gb(
+                            projection.known_reclaim_bytes,
+                            &self.view.settings.language
+                        )
+                    )
+                ));
+                let mut warnings: Vec<String> = plan
                     .warnings
                     .iter()
                     .map(|w| {
@@ -1070,6 +1276,31 @@ impl Runtime {
                         )
                     })
                     .collect();
+                warnings.push(self.label("Reclaim.Note"));
+                if let Some(projection) = projection {
+                    warnings.push(format!(
+                        "{}: {} / {} / {}",
+                        self.label("Reclaim.Excluded"),
+                        projection.excluded_hardlink_files,
+                        projection.excluded_unknown_files,
+                        projection.excluded_foreign_files
+                    ));
+                }
+                if !git.is_empty() {
+                    warnings.push(self.label("Git.ReviewNote"));
+                }
+                for (path, inspection) in git {
+                    warnings.push(format!(
+                        "{path}: {}",
+                        crate::recommendations::git_summary(
+                            &inspection,
+                            &self.view.settings.language
+                        )
+                    ));
+                }
+                if git_limited {
+                    warnings.push(self.label("Git.ReviewLimit"));
+                }
                 let rows = plan
                     .entries
                     .iter()
@@ -1350,6 +1581,18 @@ impl Runtime {
                 .collect();
         }
         self.rebuild_cleanup();
+        self.view.recommendations = self
+            .live
+            .as_ref()
+            .map(|index| {
+                crate::recommendations::insights(
+                    index,
+                    &self.analysis.classifications,
+                    &self.analysis.recommendations,
+                    &self.view.settings.language,
+                )
+            })
+            .unwrap_or_default();
         self.rebuild_map();
     }
     fn rebuild_cleanup(&mut self) {
@@ -1412,6 +1655,18 @@ impl Runtime {
             );
         } else {
             self.view.cleanup_summary = self.label("Cleanup.Eligible");
+        }
+        if let Some(report) = &self.last_report {
+            self.view.cleanup_summary = format!(
+                "{}: {} · {}",
+                self.label("Reclaim.Actual"),
+                if report.free_space_delta_available {
+                    gb(report.free_space_delta_bytes, &self.view.settings.language)
+                } else {
+                    self.label("Unknown")
+                },
+                self.label("Reclaim.Note")
+            );
         }
         self.view.cleanup_results = self
             .last_report
@@ -1492,6 +1747,7 @@ impl Runtime {
     fn rebuild_focus(&mut self) {
         self.view.focused_path.clear();
         self.view.focused_summary.clear();
+        self.view.git_summary.clear();
         let Some(index) = &self.live else {
             return;
         };
@@ -1510,6 +1766,31 @@ impl Runtime {
                 self.label("Manual.Files"),
                 self.label(if entry.coverage { "Yes" } else { "No" })
             );
+            if let Some(class) = self.analysis.classifications.get(focused) {
+                self.view.focused_summary.push_str(&format!(
+                    " · {}",
+                    self.label(crate::recommendations::category_key(class.category as u8))
+                ));
+                if let Some(reclaim) = class.reclaim {
+                    self.view.focused_summary.push_str(&format!(
+                        " · {}",
+                        self.label(crate::recommendations::reclaim_key(reclaim))
+                    ));
+                }
+            }
+            if let Some((path, inspection)) = &self.git_result
+                && path_key(path) == path_key(&self.view.focused_path)
+            {
+                self.view.git_summary =
+                    crate::recommendations::git_summary(inspection, &self.view.settings.language);
+            } else if self.git_desired.is_some()
+                || self
+                    .git_job
+                    .as_ref()
+                    .is_some_and(|job| job.generation == self.git_generation)
+            {
+                self.view.git_summary = self.label("Git.Checking");
+            }
         }
     }
     pub fn map_tiles(&self, width: f32, height: f32) -> Vec<MapTile> {
@@ -1542,7 +1823,6 @@ impl Runtime {
                 if tile.index == OTHERS_INDEX {
                     return MapTile {
                         index: tile.index,
-                        path: String::new(),
                         name: self.label("Map.Others"),
                         x: tile.x,
                         y: tile.y,
@@ -1553,6 +1833,8 @@ impl Runtime {
                         covered: false,
                         matched: false,
                         depth: tile.depth,
+                        category: 8,
+                        reclaim: false,
                     };
                 }
                 let entry = &index.entries[tile.index];
@@ -1569,12 +1851,21 @@ impl Runtime {
                         } else {
                             entry.name.to_lowercase().contains(&query)
                         },
-                    path,
                     x: tile.x,
                     y: tile.y,
                     width: tile.width,
                     height: tile.height,
                     depth: tile.depth,
+                    category: self
+                        .analysis
+                        .classifications
+                        .get(tile.index)
+                        .map_or(8, |c| c.category as u8),
+                    reclaim: self
+                        .analysis
+                        .classifications
+                        .get(tile.index)
+                        .is_some_and(|c| c.reclaim.is_some()),
                 }
             })
             .collect::<Vec<_>>();
@@ -1588,6 +1879,9 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.cancel();
+        if let Some(job) = self.git_job.take() {
+            let _ = job.join.join();
+        }
         if let Some(active) = self.active.take() {
             let _ = active.join.join();
         }
@@ -1669,6 +1963,170 @@ fn enrich_snapshot(snapshot: &mut ScanSnapshot, cancel: &Cancellation) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_or_stale_git_result_cannot_publish_verified_counts() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::new(fixture.path().to_owned()).unwrap();
+        idle(&mut runtime);
+        let cancel = Cancellation::default();
+        cancel.cancel();
+        runtime.git_generation = 7;
+        runtime.git_job = Some(GitJob {
+            generation: 7,
+            cancel,
+            join: thread::spawn(|| {}),
+        });
+        let inspection = GitInspection {
+            repository: crate::git_inspection::RepositoryState::Repository,
+            changed: Some(0),
+            untracked: Some(0),
+            stash: Some(0),
+            ahead: Some(0),
+            uncertainty: None,
+        };
+        runtime
+            .tx
+            .send(Event::GitFinished {
+                generation: 7,
+                path: fixture.path().to_string_lossy().into_owned(),
+                inspection: inspection.clone(),
+            })
+            .unwrap();
+        runtime.poll();
+        assert!(
+            runtime.git_result.is_none(),
+            "Cancelled work published verified Git counts"
+        );
+        runtime
+            .tx
+            .send(Event::GitFinished {
+                generation: 6,
+                path: fixture.path().to_string_lossy().into_owned(),
+                inspection,
+            })
+            .unwrap();
+        runtime.poll();
+        assert!(runtime.git_result.is_none());
+    }
+    #[test]
+    fn failed_post_delete_refresh_keeps_report_and_journal() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("scan");
+        fs::create_dir(&root).unwrap();
+        let file = root.join("owned-fixture.bin");
+        fs::write(&file, b"owned fixture").unwrap();
+        let data = fixture.path().join("data");
+        let mut runtime = Runtime::new(data.clone()).unwrap();
+        idle(&mut runtime);
+        runtime.command(Command::Setting(Setting::Language, "en".into()));
+        runtime.command(Command::SetRoot(root.to_string_lossy().into_owned()));
+        runtime.command(Command::Scan(false));
+        idle(&mut runtime);
+        runtime.command(Command::Mark(file.to_string_lossy().into_owned()));
+        runtime.command(Command::PreviewManual);
+        idle(&mut runtime);
+        assert!(
+            runtime
+                .view
+                .review
+                .as_ref()
+                .unwrap()
+                .summary
+                .contains("Known reclaim on current volume")
+        );
+        assert!(
+            runtime
+                .view
+                .review
+                .as_ref()
+                .unwrap()
+                .warnings
+                .iter()
+                .any(|text| text.contains("Git:"))
+        );
+        let moved = fixture.path().join("moved");
+        fs::rename(&root, &moved).unwrap();
+        runtime.command(Command::ConfirmManual);
+        idle(&mut runtime);
+        assert!(runtime.last_report.is_some());
+        assert!(moved.join("owned-fixture.bin").exists());
+        assert!(
+            runtime
+                .view
+                .error
+                .as_ref()
+                .is_some_and(|message| message.contains("Deletion completed; refresh scan failed"))
+        );
+        assert!(!runtime.view.cleanup_results.is_empty());
+        for join in runtime.journal_workers.drain(..) {
+            join.join().unwrap();
+        }
+        let report_id = runtime.last_report.as_ref().unwrap().plan_id.to_string();
+        let journal = fs::read(data.join("history.db")).unwrap();
+        assert!(
+            journal
+                .windows(report_id.len())
+                .any(|bytes| bytes == report_id.as_bytes())
+        );
+    }
+    #[test]
+    fn manual_review_repeats_git_after_selection_changes_on_disk() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("scan");
+        let repo = root.join("checkout");
+        fs::create_dir_all(&repo).unwrap();
+        let init = std::process::Command::new("git")
+            .args(["-c", "core.hooksPath=NUL", "init", "--quiet", "--template="])
+            .current_dir(&repo)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "NUL")
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        fs::write(repo.join("first.txt"), b"owned fixture").unwrap();
+        let mut runtime = Runtime::new(fixture.path().join("data")).unwrap();
+        idle(&mut runtime);
+        runtime.command(Command::Setting(Setting::Language, "en".into()));
+        runtime.command(Command::SetRoot(root.to_string_lossy().into_owned()));
+        runtime.command(Command::Scan(false));
+        idle(&mut runtime);
+        let index = runtime
+            .live
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .position(|entry| entry.name.as_ref() == "checkout")
+            .unwrap();
+        runtime.command(Command::MapFocus(index));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while runtime.git_job.is_some() || runtime.git_desired.is_some() {
+            runtime.poll();
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(runtime.view.git_summary.contains("1 untracked"));
+        runtime.command(Command::Setting(Setting::Language, "ru".into()));
+        assert!(runtime.view.git_summary.contains("1 не отслеживается"));
+        runtime.command(Command::Setting(Setting::Language, "en".into()));
+        fs::write(repo.join("second.txt"), b"owned fixture").unwrap();
+        runtime.command(Command::Mark(repo.to_string_lossy().into_owned()));
+        runtime.command(Command::PreviewManual);
+        idle(&mut runtime);
+        assert!(runtime.view.review.as_ref().unwrap().can_confirm);
+        assert!(
+            runtime
+                .view
+                .review
+                .as_ref()
+                .unwrap()
+                .warnings
+                .iter()
+                .any(|message| message.contains("2 untracked"))
+        );
+        runtime.command(Command::DismissReview);
+        assert!(repo.join("second.txt").exists());
+    }
     fn idle(runtime: &mut Runtime) {
         let deadline = Instant::now() + Duration::from_secs(15);
         while runtime.view.busy {
@@ -2080,6 +2538,15 @@ mod tests {
         runtime.command(Command::ConfirmManual);
         idle(&mut runtime);
         assert!(!file.exists());
+        assert!(
+            runtime
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .largest_files
+                .iter()
+                .all(|entry| path_key(&entry.path) != path_key(&file.to_string_lossy()))
+        );
         assert!(
             runtime
                 .last_report

@@ -30,7 +30,8 @@
 
 ## Rust is the primary client
 
-`main` develops the native Rust/GPUI client **0.3.0-alpha.3**.
+The native Rust/GPUI development version is **0.3.0-alpha.4**.
+The published Rust preview remains [0.3.0-alpha.3](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3) until a new prerelease is published.
 It remains an **unsigned preview**. Manual desktop, UAC, tray and logon checks
 are pending: see [validated evidence and limitations](docs/rust-validation.md).
 The C#/WPF source is preserved in [tag v0.2.2](https://github.com/DinLemon/DiskBurrow/tree/v0.2.2);
@@ -38,7 +39,7 @@ the previous [stable 0.2.2 release](https://github.com/DinLemon/DiskBurrow/relea
 
 ## Install and run
 
-1. Open the [0.3.0-alpha.3 prerelease page](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3). Once published, its assets are `DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip` and `.zip.sha256`. Before publication, use the validated archive provided with this version.
+1. Open the published [0.3.0-alpha.3 prerelease page](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3). Its assets are `DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip` and `.zip.sha256`. Alpha.4 features below belong to the development candidate.
 2. Verify with `Get-FileHash .\DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip -Algorithm SHA256` and compare the complete hash. Extract the **whole** ZIP into a new folder. Run `DiskBurrow.exe` as your ordinary user. Requires Windows 10 22H2 or Windows 11 x64; installing .NET or Rust is unnecessary. SQLite and the CRT are included in the native build.
 3. Close the old client and back up `%LOCALAPPDATA%\DiskBurrow` outside that directory before the first normal launch. Rust uses compatible settings/history. For an isolated trial: `DiskBurrow.exe --data-dir E:\DiskBurrowTrial --scan-root E:\MyTestFolder`. This disables monitoring, tray and autostart; it does **not** sandbox deliberately confirmed deletion.
 4. Russian is the default; select English in Settings. Light/dark appearances switch immediately; **Save** persists your choice. In normal mode, closing hides the window to the tray; **Exit** cancels work and ends the app. A second launch activates the existing instance for your user.
@@ -80,6 +81,17 @@ Mark individual folders/files in Largest or the disk map, then review the select
 
 This manual operation is separate from the four cache cleanup rules. Volume roots, system locations, broad user containers and the application's own files/data are protected. Unresolved protected boundaries, inaccessible entries, links and cloud placeholders block a complete deletion plan. Changed, busy or newly created entries are preserved; the result and local journal include partial failures and cancellation. Deletion does not inherit administrator rights from the scan helper.
 
+In alpha.4, review also shows known physical reclaim on the scanned volume. Unknown allocation, other volumes and all files with multiple hardlinks are excluded from the estimate. The measured free-space change can be negative or unavailable and includes activity by other programs. After an attempt, the app rescans the previous scan root and retains the deletion report/journal even if refresh fails or is cancelled.
+
+## Insights and Git checks — alpha.4 development
+
+- Category colors identify code, agent scratch, toolchains, synced data, Git stores, media, documents and caches. Hatching marks potentially reclaimable data; it does not mark files for deletion.
+- Cleanup → **Worth a look** lists up to 100 nonoverlapping indexed cache/build/worktree/old-experiment hints of at least 64 MiB. Incomplete coverage/allocation is disclosed. Click a path to inspect it on the map. Existing NuGet/pip hints and maintenance instructions remain under **Observed caches**.
+- Selecting a checkout root inspects tracked changes, untracked files, stash and commits ahead of its locally known upstream. The app never fetches. Missing upstream, unsafe configuration, missing Git, timeout and errors are explicitly unknown. Child folders are not treated as their ancestor repository.
+- Manual review repeats Git inspection for at most 8 selected roots, before separate permanent confirmation. These counters are advisory and can become stale; native file/ancestor revalidation remains authoritative. Git processes have a 5-second total inspection limit and a 1 MiB combined output budget, with external subprocesses refused and cancellation terminating their Windows job.
+
+Navigation/age/depth options, system appearance, global UI scaling and selected-path text/prompt export remain outside this port phase. Manual UAC/tray/logon acceptance is still pending.
+
 Disk map layout and NTFS parsing are adapted from [disktree](https://github.com/tobi/disktree), under MIT; see the [vendored core license](rust/vendor/disktree-core/LICENSE). The portable archive includes full dependency notices in `ThirdParty/`.
 
 ## Recovering corrupt history
@@ -102,7 +114,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings
 cargo test --workspace --locked -j 2
 Set-Location ..
-./scripts/publish-rust.ps1 -OutputDirectory E:\DiskBurrowBuild\alpha3 -TargetDirectory E:\DiskBurrowBuild\release
+./scripts/publish-rust.ps1 -OutputDirectory E:\DiskBurrowBuild\alpha4 -TargetDirectory E:\DiskBurrowBuild\release
 ```
 
 The output directory must be **new**. The publisher builds a static-CRT executable, verifies PE dependencies/version, collects dependency notices and packages only allowed files with SHA-256 and source provenance. Settings, history, tests and diagnostics are excluded. Initial Cargo restore needs network access; ordinary app use does not.

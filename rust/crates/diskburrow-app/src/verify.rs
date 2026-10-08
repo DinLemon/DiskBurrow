@@ -57,7 +57,7 @@ pub fn run(data: PathBuf, root: String, destination: &Path) -> Result<()> {
             runtime.command(Command::Setting(Setting::Language, language.into()));
             runtime.command(Command::Setting(Setting::Theme, theme.into()));
             let view = runtime.view();
-            appearances.push(serde_json::json!({"language":language,"theme":theme,"path_header":locale::text(language,"Path"),"logical_header":locale::text(language,"Logical"),"overview":view.overview,"folders":view.folders.iter().map(|r|(&r.path,&r.cells)).collect::<Vec<_>>(),"files":view.files.iter().map(|r|(&r.path,&r.cells)).collect::<Vec<_>>() }));
+            appearances.push(serde_json::json!({"language":language,"theme":theme,"path_header":locale::text(language,"Path"),"logical_header":locale::text(language,"Logical"),"overview":view.overview,"folders":view.folders.iter().map(|r|(&r.path,&r.cells)).collect::<Vec<_>>(),"files":view.files.iter().map(|r|(&r.path,&r.cells)).collect::<Vec<_>>(),"insights_heading":locale::text(language,"Insights.Title"),"recommendations":view.recommendations.iter().map(|r|(&r.path,&r.cells)).collect::<Vec<_>>() }));
         }
     }
     let tiles = runtime.map_tiles(650., 400.);
@@ -67,7 +67,7 @@ pub fn run(data: PathBuf, root: String, destination: &Path) -> Result<()> {
             .all(|t| t.x.is_finite() && t.y.is_finite() && t.width >= 0. && t.height >= 0.),
         "Invalid map geometry"
     );
-    let report = serde_json::json!({"product_version":env!("CARGO_PKG_VERSION"),"executable":std::env::current_exe()?,"ordinary_user":!crate::helper::is_elevated()?,"scan_root":snapshot.root,"traversal_completed":snapshot.traversal_completed,"directories":snapshot.directories.len(),"largest_files":snapshot.largest_files.len(),"issues":snapshot.issues.len(),"map_tiles":tiles.len(),"appearances":appearances,"snapshot_export":snapshot_path,"verification_scope":"Real executable, ordinary metadata scan, live map geometry, localized view projections and export; no GUI clicks, UAC approval, deletion, tray or autostart"});
+    let report = serde_json::json!({"product_version":env!("CARGO_PKG_VERSION"),"executable":std::env::current_exe()?,"ordinary_user":!crate::helper::is_elevated()?,"scan_root":snapshot.root,"traversal_completed":snapshot.traversal_completed,"directories":snapshot.directories.len(),"largest_files":snapshot.largest_files.len(),"issues":snapshot.issues.len(),"map_tiles":tiles.len(),"reclaim_tiles":tiles.iter().filter(|tile|tile.reclaim).count(),"map_categories":tiles.iter().map(|tile|tile.category).collect::<Vec<_>>(),"appearances":appearances,"snapshot_export":snapshot_path,"verification_scope":"Real executable, ordinary metadata scan, live map geometry, indexed category/reclaim/recommendation projections and export; no GUI clicks, UAC approval, deletion, tray or autostart"});
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

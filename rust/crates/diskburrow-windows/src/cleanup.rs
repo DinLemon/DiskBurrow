@@ -539,26 +539,17 @@ impl CleanupService {
                 result,
             ));
         }
-        let mut measured = !before.is_empty();
-        let mut delta = 0i64;
-        for (volume, previous) in before {
-            match (previous, available_bytes(&volume)) {
-                (Some(b), Some(a)) => {
-                    if let Some(d) = a.checked_sub(b).and_then(|d| delta.checked_add(d)) {
-                        delta = d
-                    } else {
-                        measured = false
-                    }
-                }
-                _ => measured = false,
-            }
-        }
+        let delta = volume_change(
+            before
+                .into_iter()
+                .map(|(volume, previous)| (previous, available_bytes(&volume))),
+        );
         Ok(CleanupReport {
             plan_id,
             items,
             was_cancelled: cancel.is_cancelled(),
-            free_space_delta_bytes: if measured { delta } else { 0 },
-            free_space_delta_available: measured,
+            free_space_delta_bytes: delta.unwrap_or(0),
+            free_space_delta_available: delta.is_some(),
         })
     }
     fn delete_candidate(&self, c: &CleanupCandidate, cancel: &Cancellation) -> Result<(), Fault> {
@@ -830,6 +821,19 @@ impl CleanupService {
         };
         let _lock = self.execution.lock().unwrap();
         let mut items = Vec::new();
+        // Measure every involved drive before any deletion, even for cancelled/partial attempts.
+        // This observes volume state; concurrent programs can make the signed delta negative.
+        let before = issued
+            .plan
+            .roots
+            .iter()
+            .fold(HashMap::new(), |mut volumes, root| {
+                let volume = &root[..3];
+                volumes
+                    .entry(volume.to_owned())
+                    .or_insert_with(|| available_bytes(volume));
+                volumes
+            });
         for root in &issued.plan.roots {
             let mut entries = issued
                 .plan
@@ -869,12 +873,17 @@ impl CleanupService {
                 ));
             }
         }
+        let delta = volume_change(
+            before
+                .into_iter()
+                .map(|(volume, previous)| (previous, available_bytes(&volume))),
+        );
         Ok(CleanupReport {
             plan_id,
             items,
             was_cancelled: cancel.is_cancelled(),
-            free_space_delta_bytes: 0,
-            free_space_delta_available: false,
+            free_space_delta_bytes: delta.unwrap_or(0),
+            free_space_delta_available: delta.is_some(),
         })
     }
     fn revalidate_inventory(
@@ -1120,4 +1129,48 @@ fn available_bytes(volume: &str) -> Option<i64> {
         )
     };
     (ok != 0).then(|| i64::try_from(available).ok()).flatten()
+}
+
+fn volume_change(
+    observations: impl IntoIterator<Item = (Option<i64>, Option<i64>)>,
+) -> Option<i64> {
+    let mut total = None;
+    for (before, after) in observations {
+        let before = before.filter(|bytes| *bytes >= 0)?;
+        let after = after.filter(|bytes| *bytes >= 0)?;
+        total = Some(
+            total
+                .unwrap_or(0i64)
+                .checked_add(after.checked_sub(before)?)?,
+        );
+    }
+    total
+}
+
+#[cfg(test)]
+mod volume_change_tests {
+    use super::volume_change;
+
+    #[test]
+    fn signed_change_keeps_negative_concurrent_changes_and_sums_unique_volumes() {
+        assert_eq!(volume_change([(Some(100), Some(50))]), Some(-50));
+        assert_eq!(
+            volume_change([(Some(100), Some(200)), (Some(50), Some(25))]),
+            Some(75)
+        );
+    }
+
+    #[test]
+    fn missing_invalid_or_overflowed_observations_make_entire_change_unavailable() {
+        for observations in [
+            vec![],
+            vec![(None, Some(1))],
+            vec![(Some(1), None)],
+            vec![(Some(-1), Some(1))],
+            vec![(Some(1), Some(-1))],
+            vec![(Some(0), Some(i64::MAX)), (Some(0), Some(1))],
+        ] {
+            assert_eq!(volume_change(observations), None);
+        }
+    }
 }

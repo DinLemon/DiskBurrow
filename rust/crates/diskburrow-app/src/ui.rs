@@ -13,7 +13,8 @@ use gpui_kit::base::{
 use gpui_kit::{
     AppContext as _, Bounds, Context, Div, Entity, FocusHandle, Focusable as _, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels, Render,
-    Stateful, StatefulInteractiveElement as _, Styled, Window, div, px, rgb, rgba, uniform_list,
+    Stateful, StatefulInteractiveElement as _, Styled, Window, div, prelude::FluentBuilder as _,
+    px, rgb, rgba, uniform_list,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -78,6 +79,7 @@ enum TableKind {
     Cleanup,
     History,
     Map,
+    Insight,
 }
 
 pub struct App {
@@ -574,7 +576,7 @@ impl App {
             );
         }
         nav.child(div().flex_1())
-            .child(self.note("0.3.0-alpha.3 · Rust / GPUI".into()))
+            .child(self.note(format!("{} · Rust / GPUI", env!("CARGO_PKG_VERSION"))))
     }
     fn table(
         &self,
@@ -680,6 +682,12 @@ impl App {
                         let mut path = gpui_omarchy::with_tooltip(
                             div()
                                 .id(format!("{}-path-{}", row_id, i))
+                                .role(gpui_kit::Role::Link)
+                                .test_support()
+                                .aria_label(row.path.clone())
+                                .when(matches!(kind, TableKind::Insight), |path| {
+                                    path.cursor_pointer().text_color(p.accent)
+                                })
                                 .flex_1()
                                 .min_w_0()
                                 .overflow_hidden()
@@ -688,6 +696,18 @@ impl App {
                             row.path.clone(),
                         );
                         match kind {
+                            TableKind::Insight => {
+                                if let Ok(index) = row.key.parse::<usize>() {
+                                    path =
+                                        path.on_click(cx.listener(move |this, _, window, cx| {
+                                            this.page = Page::Map;
+                                            this.focused_tile = Some(index);
+                                            this.dispatch(Command::MapNavigate(index), cx);
+                                            this.dispatch(Command::MapFocus(index), cx);
+                                            window.focus(&this.map_focus, cx);
+                                        }));
+                                }
+                            }
                             TableKind::History => {
                                 let key = row.key.clone();
                                 path = path.on_click(cx.listener(move |this, _, _, cx| {
@@ -943,6 +963,45 @@ impl App {
                 .into_any_element()
             })
     }
+    fn map_legend(&self) -> Div {
+        let mut legend = div()
+            .id("map-category-legend")
+            .flex()
+            .flex_wrap()
+            .gap_1()
+            .text_size(px(10.));
+        for category in crate::recommendations::legend() {
+            legend = legend.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .w(px(7.))
+                            .h(px(7.))
+                            .bg(map_view::category_color(category)),
+                    )
+                    .child(crate::locale::text(
+                        &self.runtime.view().settings.language,
+                        crate::recommendations::category_key(category),
+                    )),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(legend)
+            .child(gpui_omarchy::with_tooltip(
+                div()
+                    .id("map-hatch-note")
+                    .text_size(px(10.))
+                    .text_ellipsis()
+                    .child(self.text("Reclaim.Hatch")),
+                self.text("Reclaim.Hatch"),
+            ))
+    }
     fn cleanup(
         &self,
         view: &UiView,
@@ -966,6 +1025,36 @@ impl App {
             ));
         }
         let body = match self.cleanup_tab {
+            4 => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    div()
+                        .id("insights-heading")
+                        .role(gpui_kit::Role::Heading)
+                        .test_support()
+                        .aria_label(self.text("Insights.Title"))
+                        .child(self.text("Insights.Title")),
+                )
+                .child(gpui_omarchy::with_tooltip(
+                    div()
+                        .id("insights-note")
+                        .text_size(px(11.))
+                        .text_ellipsis()
+                        .child(self.text("Insights.Note")),
+                    self.text("Insights.Note"),
+                ))
+                .child(self.table(
+                    "insights-list",
+                    view.recommendations.clone(),
+                    &["Category", "Reason", "Allocated"],
+                    TableKind::Insight,
+                    cx,
+                ))
+                .into_any_element(),
             3 => {
                 let mut buttons = div().flex().flex_wrap().gap_1();
                 for (index, label) in [
@@ -1130,14 +1219,39 @@ impl App {
                     ))
                     .child(self.local_button(
                         "cleanup-tab-recommendations",
-                        self.text("Recommend.Observed"),
+                        self.text("Insights.Title"),
                         |this, _, cx| {
-                            this.cleanup_tab = 3;
+                            this.cleanup_tab = 4;
                             cx.notify();
                         },
                         cx,
                     )),
             )
+            .when(matches!(self.cleanup_tab, 3 | 4), |body| {
+                body.child(
+                    div()
+                        .flex()
+                        .gap_1()
+                        .child(self.local_button(
+                            "insights-worth-look",
+                            self.text("Insights.Title"),
+                            |this, _, cx| {
+                                this.cleanup_tab = 4;
+                                cx.notify();
+                            },
+                            cx,
+                        ))
+                        .child(self.local_button(
+                            "insights-observed",
+                            self.text("Insights.Observed"),
+                            |this, _, cx| {
+                                this.cleanup_tab = 3;
+                                cx.notify();
+                            },
+                            cx,
+                        )),
+                )
+            })
             .child(self.note(view.cleanup_summary.clone()))
             .child(body)
             .child(gpui_omarchy::with_tooltip(
@@ -1485,6 +1599,16 @@ impl App {
                                 view.focused_path.clone(),
                             ))
                             .child(self.note(view.focused_summary.clone()))
+                            .child(gpui_omarchy::with_tooltip(
+                                div()
+                                    .id("git-detail")
+                                    .max_h(px(72.))
+                                    .text_size(px(11.))
+                                    .overflow_hidden()
+                                    .child(view.git_summary.clone()),
+                                view.git_summary.clone(),
+                            ))
+                            .child(self.map_legend())
                             .child(self.button(
                                 "map-mark-focus",
                                 self.text("Map.Mark"),
@@ -1972,6 +2096,98 @@ mod tests {
     use super::*;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{TestAppContext, size};
+
+    #[gpui_kit::test]
+    fn recommendation_click_only_navigates_and_keeps_fixture_unmarked(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("scan");
+        let cache = root.join(".cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let file = cache.join("large-owned-fixture.bin");
+        std::fs::File::create(&file)
+            .unwrap()
+            .set_len(72 * 1024 * 1024)
+            .unwrap();
+        let mut runtime = Runtime::new(fixture.path().join("data")).unwrap();
+        let idle = |runtime: &mut Runtime| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while runtime.view().busy {
+                runtime.poll();
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        idle(&mut runtime);
+        runtime.command(Command::SetRoot(root.to_string_lossy().into_owned()));
+        runtime.command(Command::Setting(Setting::Language, "en".into()));
+        runtime.command(Command::Scan(false));
+        idle(&mut runtime);
+        assert_eq!(runtime.view().recommendations.len(), 1);
+        assert_eq!(runtime.view().recommendations[0].cells[0], "Cache");
+        assert_eq!(
+            runtime.view().recommendations[0].cells[1],
+            "Regenerable cache"
+        );
+        cx.update(gpui_omarchy::init);
+        let mut entity = None;
+        let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+            entity = Some(cx.entity());
+            App::new(runtime, window, cx)
+        });
+        let app = entity.unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("nav-cleanup", cx);
+            window.click("cleanup-tab-recommendations", cx);
+            window.click("insights-list-path-0", cx);
+            assert!(window.find("map-viewport").visible());
+        })
+        .unwrap();
+        app.update(cx, |app, _| {
+            assert_eq!(app.page, Page::Map);
+            assert_eq!(app.runtime.view().selected_count, 0);
+            assert!(app.runtime.view().review.is_none());
+            assert!(
+                app.runtime
+                    .view()
+                    .focused_path
+                    .eq_ignore_ascii_case(&cache.to_string_lossy())
+            );
+            assert!(app.runtime.view().focused_summary.contains("Cache"));
+        });
+        assert!(file.exists());
+    }
+
+    #[gpui_kit::test]
+    fn insights_tab_is_localized_and_visible_in_minimum_window(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        cx.update(gpui_omarchy::init);
+        let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+            App::new(Runtime::new(fixture.path().to_owned()).unwrap(), window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("nav-settings", cx);
+            window.click("language-en", cx);
+            window.click("nav-cleanup", cx);
+            window.click("cleanup-tab-recommendations", cx);
+            assert_eq!(
+                window.find("insights-heading").label(),
+                Some("Worth a look")
+            );
+            assert!(window.find("insights-heading").visible());
+            window.click("nav-settings", cx);
+            window.click("theme-dark", cx);
+            window.click("language-ru", cx);
+            window.click("nav-cleanup", cx);
+            assert_eq!(
+                window.find("insights-heading").label(),
+                Some("Стоит посмотреть")
+            );
+            assert!(window.find("insights-heading").bounds().bottom() <= px(572.));
+        })
+        .unwrap();
+    }
 
     #[gpui_kit::test]
     fn minimum_window_keeps_long_path_map_and_review_visible(cx: &mut TestAppContext) {

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["vendor/disktree-core", "crates/diskburrow-services", "crates/diskburrow-windows", "crates/diskburrow-app", "crates/diskburrow-engine"]
 
 [workspace.package]
-version = "0.3.0-alpha.3"
+version = "0.3.0-alpha.4"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"

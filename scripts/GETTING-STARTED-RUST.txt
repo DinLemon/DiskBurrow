@@ -1,4 +1,4 @@
-DiskBurrow 0.3.0-alpha.3 - Rust preview (unsigned)
+DiskBurrow 0.3.0-alpha.4 - Rust preview (unsigned)
 
 Requires Windows 10 22H2 / Windows 11 x64 and a working Direct3D 11 driver.
 Extract the complete ZIP. Run DiskBurrow.exe as an ordinary user.
@@ -22,6 +22,16 @@ and history. Close the old application first. Back up this directory before
 trying migration. Delete operations are permanent and require separate review
 and confirmation. Changed, inaccessible, protected, linked/cloud entries are
 refused or skipped according to the native revalidation rules.
+
+Cleanup > Worth a look shows informational category/cache/build/worktree hints.
+Click a recommendation to inspect it on the map; it does not select deletion.
+Category colors and reclaim hatching are hints, not deletion permission.
+Selecting a Git checkout root performs a bounded local check; manual review
+checks up to 8 selected roots again. Unknown Git information is never clean.
+No fetch, hooks, filters or repository-selected subprocesses are allowed.
+Manual review estimates known physical reclaim on the scanned volume, excluding
+unknown/foreign allocation and multiple hardlinks. Actual volume free-space
+change includes concurrent programs. A post-attempt rescan retains the report.
 
 Russian/English and light/dark appearance are in Settings. Save persists choices.
 Decimal GB means 1,000,000,000 bytes. Closing normal mode hides to the tray;

@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 mod contract;
+mod git_inspection;
 mod helper;
 mod helper_args;
 mod input;
