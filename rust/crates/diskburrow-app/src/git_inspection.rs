@@ -702,13 +702,39 @@ mod process {
 mod tests {
     use super::*;
     use std::{fs, path::Path, process::Command};
+    fn is_owned_fixture(directory: &Path, root: &Path) -> bool {
+        root.is_absolute()
+            && directory.parent() == Some(root)
+            && directory
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("diskburrow-git-"))
+    }
+    #[test]
+    fn fixture_ownership_uses_the_scratch_root_on_any_drive() {
+        for root in [r"D:\runner\owned-temp", r"E:\local\owned-temp"] {
+            let root = Path::new(root);
+            assert!(is_owned_fixture(&root.join("diskburrow-git-123"), root));
+            assert!(!is_owned_fixture(&root.join("other-123"), root));
+            assert!(!is_owned_fixture(
+                &root.join("nested").join("diskburrow-git-123"),
+                root
+            ));
+            assert!(!is_owned_fixture(root, root));
+        }
+    }
     fn fixture() -> tempfile::TempDir {
-        let temp = std::env::var_os("TEMP").expect("E: TEMP required");
-        assert!(temp.to_string_lossy().starts_with("E:"));
-        tempfile::Builder::new()
+        let temp = PathBuf::from(std::env::var_os("TEMP").expect("owned TEMP required"));
+        assert!(temp.is_absolute());
+        let canonical_root = fs::canonicalize(&temp).expect("owned TEMP must exist");
+        let fixture = tempfile::Builder::new()
             .prefix("diskburrow-git-")
-            .tempdir_in(temp)
-            .unwrap()
+            .tempdir_in(&temp)
+            .unwrap();
+        assert!(is_owned_fixture(
+            &fs::canonicalize(fixture.path()).unwrap(),
+            &canonical_root
+        ));
+        fixture
     }
     fn git(path: &Path, args: &[&str]) -> String {
         let output = Command::new("git.exe")
@@ -999,7 +1025,7 @@ mod tests {
         fs::create_dir(&tools).unwrap();
         // A real disposable executable, outside the selected checkout. It performs
         // no subprocess launch: the one-process job cannot contain this initial
-        // executable-discovery mistake. All compiler outputs stay in owned E: TEMP.
+        // executable-discovery mistake. All compiler outputs stay in owned TEMP.
         fs::write(
             tools.join("marker.c"),
             r#"
@@ -1063,15 +1089,14 @@ int main(void) {
         ]
     }
     fn fixture_guard() {
-        let directory = std::env::current_dir().unwrap();
-        assert!(directory.to_string_lossy().starts_with("E:"));
-        assert!(
-            directory
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("diskburrow-git-")
-        );
+        let directory = fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        // Native process fixtures receive the isolated command environment,
+        // whose ceiling is the same owned parent as the caller's TEMP.
+        let root = std::env::var_os("TEMP")
+            .or_else(|| std::env::var_os("GIT_CEILING_DIRECTORIES"))
+            .expect("owned fixture root required");
+        let root = fs::canonicalize(root).unwrap();
+        assert!(is_owned_fixture(&directory, &root));
     }
     #[test]
     #[ignore = "child-only environment fixture"]

@@ -66,5 +66,5 @@
 - [x] Independent source review of the immutable diff, native process/deletion boundaries and transient publication states.
 - [x] Correct any load-bearing findings and rerun their covering checks.
 - [x] Update validation and user docs to the implemented scope; retain all unported items and manual acceptance checks.
-- [ ] Build a fresh portable archive, verify extracted ordinary-user fixture scan/map/export, checksums and source revision.
-- [ ] Publish a reviewable GitHub PR with exact validation scope; attach it to this task. Do not modify existing releases or tag incomplete behavior as stable.
+- [x] Build a fresh portable archive, verify extracted ordinary-user fixture scan/map/export, checksums and source revision.
+- [x] Publish a reviewable GitHub PR with exact validation scope; attach it to this task. Do not modify existing releases or tag incomplete behavior as stable.

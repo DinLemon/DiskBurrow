@@ -7,8 +7,8 @@ bounded recommendations, safe local Git inspection, conservative native reclaim
 projection, measured volume changes and post-attempt refresh with report retention.
 The published alpha.3 and stable C#/WPF 0.2.2 assets remain unchanged.
 
-Locked Windows workspace verification: **330 passed, 0 failed, 7 ignored**
-(application 70; engine 25; services 28; native/platform 43; vendored core 164).
+Locked Windows workspace verification: **331 passed, 0 failed, 7 ignored**
+(application 71; engine 25; services 28; native/platform 43; vendored core 164).
 Six ignored Git helper entrypoints are invoked and verified by their parent
 tests; the remaining ignored test is the existing upstream timing test.
 `cargo fmt --all --check` and workspace/all-target Clippy with `-D warnings` pass.
@@ -21,6 +21,9 @@ tests; the remaining ignored test is the existing upstream timing test.
   An independent P1 review finding was reproduced with a real sibling marker
   `git.exe` nominated by poisoned PATH; OS-known-installation-only discovery
   makes the regression pass without executing it.
+  Fixture ownership is checked against the canonical scratch parent and generated
+  directory prefix, on any drive. Hosted CI exposed a local-only E: assertion;
+  its regression now covers runner/local roots and rejects unrelated or nested paths.
 - Runtime tests repeat Git checks after on-disk changes, reject cancelled/stale
   publications, delete only generated fixtures, refresh the accepted snapshot,
   and retain the actual report and SQLite journal when refresh fails.
