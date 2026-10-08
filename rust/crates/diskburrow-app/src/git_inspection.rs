@@ -1,5 +1,8 @@
 //! Local, bounded Git inspection. No operation here authorizes deletion.
-use diskburrow_windows::Cancellation;
+//! Git is discovered only in OS-known Program Files/Git or LocalAppData/Programs/Git
+//! installations. Portable/custom installations outside these locations are unknown
+//! (GitUnavailable); inherited PATH and environment never nominate an executable.
+use diskburrow_windows::{Cancellation, RuleEnvironment as _, WindowsRuleEnvironment};
 use std::{
     ffi::OsStr,
     fs,
@@ -113,32 +116,39 @@ fn direct_checkout(directory: &Path) -> Result<bool, GitUncertainty> {
     Ok(true)
 }
 fn discover_git(directory: &Path) -> Option<PathBuf> {
-    // Never resolve a relative PATH entry, the current directory or a Git executable
-    // supplied by the inspected tree. Only an installed, absolute git.exe is used.
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .filter(|p| {
-            p.is_absolute()
-                && diskburrow_windows::normalize_local_path(&p.to_string_lossy()).is_some()
-        })
-        .find_map(|base| {
-            // Git for Windows' cmd/git.exe is a launcher. Use its adjacent built-in
-            // executable so our one-process job can refuse *all* subprocesses.
-            let builtin = base.parent()?.join("mingw64/bin/git.exe");
-            let candidate = dunce::canonicalize(if builtin.is_file() {
-                builtin
-            } else {
-                base.join("git.exe")
+    // PATH can nominate a malicious initial executable even with a one-process job.
+    // Obtain installation roots from Windows known-folder APIs, never environment
+    // variables, the current/inspected directory, or a repository's ancestor tools.
+    let known = WindowsRuleEnvironment.known_directories();
+    let installations = [
+        PathBuf::from(known.program_files).join("Git"),
+        PathBuf::from(known.program_files_x86).join("Git"),
+        PathBuf::from(known.local_app_data).join("Programs/Git"),
+    ];
+    installations.into_iter().find_map(|installation| {
+        diskburrow_windows::normalize_local_path(&installation.to_string_lossy())?;
+        let installation = dunce::canonicalize(installation).ok()?;
+        diskburrow_windows::normalize_local_path(&installation.to_string_lossy())?;
+        // cmd/git.exe is a launcher. Only the actual installed builtin is eligible
+        // so the job can prohibit every subprocess, including filter shell programs.
+        ["mingw64/bin/git.exe", "mingw32/bin/git.exe"]
+            .into_iter()
+            .find_map(|relative| {
+                let candidate = dunce::canonicalize(installation.join(relative)).ok()?;
+                (candidate.is_file()
+                    && diskburrow_windows::normalize_local_path(&candidate.to_string_lossy())
+                        .is_some()
+                    && diskburrow_windows::is_within(
+                        &candidate.to_string_lossy(),
+                        &installation.to_string_lossy(),
+                    )
+                    && !diskburrow_windows::is_within(
+                        &candidate.to_string_lossy(),
+                        &directory.to_string_lossy(),
+                    ))
+                .then_some(candidate)
             })
-            .ok()?;
-            (candidate.is_file()
-                && diskburrow_windows::normalize_local_path(&candidate.to_string_lossy()).is_some()
-                && !diskburrow_windows::is_within(
-                    &candidate.to_string_lossy(),
-                    &directory.to_string_lossy(),
-                ))
-            .then_some(candidate)
-        })
+    })
 }
 fn inspect_with_git(
     directory: &Path,
@@ -981,6 +991,68 @@ mod tests {
         );
         assert!(!marker.exists());
     }
+    #[test]
+    fn poisoned_absolute_path_cannot_execute_sibling_repository_tool() {
+        let selected = repo();
+        let attacker = fixture();
+        let tools = attacker.path().join("tools");
+        fs::create_dir(&tools).unwrap();
+        // A real disposable executable, outside the selected checkout. It performs
+        // no subprocess launch: the one-process job cannot contain this initial
+        // executable-discovery mistake. All compiler outputs stay in owned E: TEMP.
+        fs::write(
+            tools.join("marker.c"),
+            r#"
+#define _CRT_SECURE_NO_WARNINGS
+#include <stdio.h>
+int main(void) {
+    FILE *marker = fopen("POISONED_PATH_EXECUTED", "wb");
+    if (marker) { fputs("executed", marker); fclose(marker); }
+    return 1;
+}
+"#,
+        )
+        .unwrap();
+        let compiled = Command::new("cl.exe")
+            .current_dir(&tools)
+            .args([
+                "/nologo",
+                "/MT",
+                "/O1",
+                "/Fe:git.exe",
+                "/Fo:marker.obj",
+                "marker.c",
+            ])
+            .output()
+            .expect("MSVC fixture compiler from rust-env.ps1");
+        assert!(
+            compiled.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&compiled.stdout),
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        assert!(tools.join("git.exe").is_file());
+        let inherited = std::env::var_os("PATH").unwrap();
+        let mut search = vec![tools];
+        search.extend(std::env::split_paths(&inherited));
+        let poisoned = std::env::join_paths(search).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(fixture_args("fixture_poisoned_path"))
+            .current_dir(selected.path())
+            .env("PATH", poisoned)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !selected.path().join("POISONED_PATH_EXECUTED").exists(),
+            "inspection executed an attacker-supplied git.exe from inherited absolute PATH"
+        );
+    }
     fn fixture_args(name: &str) -> Vec<String> {
         vec![
             "--ignored".into(),
@@ -1009,6 +1081,12 @@ mod tests {
         assert_eq!(actual.repository, RepositoryState::Repository);
         assert_eq!((actual.changed, actual.untracked), (Some(1), Some(1)));
         assert_eq!(actual.uncertainty, Some(GitUncertainty::NoUpstream));
+    }
+    #[test]
+    #[ignore = "child-only poisoned PATH fixture"]
+    fn fixture_poisoned_path() {
+        fixture_guard();
+        let _ = check(&std::env::current_dir().unwrap());
     }
     #[test]
     #[ignore = "child-only native process fixture"]

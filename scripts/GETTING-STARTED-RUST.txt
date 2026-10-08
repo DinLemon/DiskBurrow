@@ -29,6 +29,8 @@ Category colors and reclaim hatching are hints, not deletion permission.
 Selecting a Git checkout root performs a bounded local check; manual review
 checks up to 8 selected roots again. Unknown Git information is never clean.
 No fetch, hooks, filters or repository-selected subprocesses are allowed.
+Git must be in a standard Windows Git installation directory; arbitrary PATH
+entries and portable/custom installations elsewhere are never executed.
 Manual review estimates known physical reclaim on the scanned volume, excluding
 unknown/foreign allocation and multiple hardlinks. Actual volume free-space
 change includes concurrent programs. A post-attempt rescan retains the report.

@@ -1763,6 +1763,18 @@ impl App {
     fn overlays(&self, view: &UiView, cx: &Context<Self>) -> Vec<gpui_kit::AnyElement> {
         let mut overlays = vec![];
         if let Some(review) = &view.review {
+            let mut warnings = div()
+                .id("review-warnings-scroll")
+                .role(gpui_kit::Role::Group)
+                .test_support()
+                .aria_label(self.text("Cleanup.Warnings"))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .max_h(px(112.))
+                .min_h_0()
+                .flex_shrink_0()
+                .overflow_y_scroll();
             let mut details = div()
                 .flex()
                 .flex_col()
@@ -1770,19 +1782,29 @@ impl App {
                 .min_h_0()
                 .flex_1()
                 .child(self.note(review.summary.clone()));
-            for warning in &review.warnings {
-                details = details.child(
+            for (index, warning) in review.warnings.iter().enumerate() {
+                warnings = warnings.child(
                     div()
+                        .id(format!("review-warning-{index}"))
+                        .role(gpui_kit::Role::Group)
+                        .test_support()
+                        .aria_label(warning.clone())
+                        .flex_shrink_0()
                         .text_color(self.palette().danger)
                         .text_size(px(12.))
                         .child(warning.clone()),
                 );
             }
             details = details
+                .child(warnings)
                 .child(
                     div()
-                        .h(px(210.))
-                        .min_h_0()
+                        .id("review-items-pane")
+                        .role(gpui_kit::Role::Group)
+                        .test_support()
+                        .aria_label(self.text("Manual.Files"))
+                        .min_h(px(100.))
+                        .flex_1()
                         .flex()
                         .flex_col()
                         .child(self.table(
@@ -1797,7 +1819,11 @@ impl App {
                             cx,
                         )),
                 )
-                .child(self.note(self.text("Manual.PermanentWarning")));
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .child(self.note(self.text("Manual.PermanentWarning"))),
+                );
             let actions = div()
                 .flex()
                 .gap_2()
@@ -2096,6 +2122,75 @@ mod tests {
     use super::*;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{TestAppContext, size};
+    #[gpui_kit::test]
+    fn long_eight_root_review_keeps_rows_and_confirmation_actions_visible(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("long-reviewed-root-name-".repeat(4));
+        std::fs::create_dir(&root).unwrap();
+        let mut paths = vec![];
+        for i in 0..8 {
+            let file = root.join(format!("{i}-{}.txt", "long-reviewed-file-name-".repeat(6)));
+            std::fs::write(&file, b"owned review fixture").unwrap();
+            paths.push(file);
+        }
+        let idle = |runtime: &mut Runtime| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            while runtime.view().busy {
+                runtime.poll();
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        cx.update(gpui_omarchy::init);
+        for language in ["ru", "en"] {
+            for theme in ["light", "dark"] {
+                let mut runtime =
+                    Runtime::new(fixture.path().join(format!("data-{language}-{theme}"))).unwrap();
+                idle(&mut runtime);
+                runtime.command(Command::Setting(Setting::Language, language.into()));
+                runtime.command(Command::Setting(Setting::Theme, theme.into()));
+                runtime.command(Command::SetRoot(root.to_string_lossy().into_owned()));
+                runtime.command(Command::Scan(false));
+                idle(&mut runtime);
+                for file in &paths {
+                    runtime.command(Command::Mark(file.to_string_lossy().into_owned()));
+                }
+                runtime.command(Command::PreviewManual);
+                idle(&mut runtime);
+                assert!(runtime.view().review.as_ref().unwrap().can_confirm);
+                assert!(runtime.view().review.as_ref().unwrap().warnings.len() >= 11);
+                let last_warning = format!(
+                    "review-warning-{}",
+                    runtime.view().review.as_ref().unwrap().warnings.len() - 1
+                );
+                let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+                    App::new(runtime, window, cx)
+                });
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.find("review-items-0").visible());
+                    assert!(window.find("review-items-pane").bounds().size.height >= px(100.));
+                    assert!(window.find("review-warnings-scroll").bounds().size.height <= px(112.));
+                    window.scroll(
+                        "review-warnings-scroll",
+                        gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-10000.))),
+                        cx,
+                    );
+                    assert!(window.find(last_warning.clone()).visible());
+                    assert!(window.find("review-close").visible());
+                    assert!(window.find("review-request-delete").visible());
+                    assert!(window.find("review-request-delete").bounds().bottom() <= px(600.));
+                    window.click("review-request-delete", cx);
+                    assert!(window.find("permanent-cancel").visible());
+                    assert!(window.find("permanent-confirm").bounds().bottom() <= px(600.));
+                    window.click("permanent-cancel", cx);
+                    window.click("review-close", cx);
+                })
+                .unwrap();
+            }
+        }
+        assert!(paths.iter().all(|file| file.exists()));
+    }
 
     #[gpui_kit::test]
     fn recommendation_click_only_navigates_and_keeps_fixture_unmarked(cx: &mut TestAppContext) {
