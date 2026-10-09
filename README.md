@@ -30,7 +30,7 @@
 
 ## Rust is the primary client
 
-The native Rust/GPUI development version is **0.3.0-alpha.4**.
+The native Rust/GPUI development version is **0.3.0-alpha.5**.
 The published Rust preview remains [0.3.0-alpha.3](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3) until a new prerelease is published.
 It remains an **unsigned preview**. Manual desktop, UAC, tray and logon checks
 are pending: see [validated evidence and limitations](docs/rust-validation.md).
@@ -39,7 +39,7 @@ the previous [stable 0.2.2 release](https://github.com/DinLemon/DiskBurrow/relea
 
 ## Install and run
 
-1. Open the published [0.3.0-alpha.3 prerelease page](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3). Its assets are `DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip` and `.zip.sha256`. Alpha.4 features below belong to the development candidate.
+1. Open the published [0.3.0-alpha.3 prerelease page](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3). Its assets are `DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip` and `.zip.sha256`. Alpha.5 features below belong to the development candidate.
 2. Verify with `Get-FileHash .\DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip -Algorithm SHA256` and compare the complete hash. Extract the **whole** ZIP into a new folder. Run `DiskBurrow.exe` as your ordinary user. Requires Windows 10 22H2 or Windows 11 x64; installing .NET or Rust is unnecessary. SQLite and the CRT are included in the native build.
 3. Close the old client and back up `%LOCALAPPDATA%\DiskBurrow` outside that directory before the first normal launch. Rust uses compatible settings/history. For an isolated trial: `DiskBurrow.exe --data-dir E:\DiskBurrowTrial --scan-root E:\MyTestFolder`. This disables monitoring, tray and autostart; it does **not** sandbox deliberately confirmed deletion.
 4. Russian is the default; select English in Settings. Light/dark appearances switch immediately; **Save** persists your choice. In normal mode, closing hides the window to the tray; **Exit** cancels work and ends the app. A second launch activates the existing instance for your user.
@@ -81,9 +81,9 @@ Mark individual folders/files in Largest or the disk map, then review the select
 
 This manual operation is separate from the four cache cleanup rules. Volume roots, system locations, broad user containers and the application's own files/data are protected. Unresolved protected boundaries, inaccessible entries, links and cloud placeholders block a complete deletion plan. Changed, busy or newly created entries are preserved; the result and local journal include partial failures and cancellation. Deletion does not inherit administrator rights from the scan helper.
 
-In alpha.4, review also shows known physical reclaim on the scanned volume. Unknown allocation, other volumes and all files with multiple hardlinks are excluded from the estimate. The measured free-space change can be negative or unavailable and includes activity by other programs. After an attempt, the app rescans the previous scan root and retains the deletion report/journal even if refresh fails or is cancelled.
+In the development candidate, review also shows known physical reclaim on the scanned volume. Unknown allocation, other volumes and all files with multiple hardlinks are excluded from the estimate. The measured free-space change can be negative or unavailable and includes activity by other programs. After an attempt, the app rescans the previous scan root and retains the deletion report/journal even if refresh fails or is cancelled.
 
-## Insights and Git checks — alpha.4 development
+## Insights and Git checks — alpha.5 development
 
 - Category colors identify code, agent scratch, toolchains, synced data, Git stores, media, documents and caches. Hatching marks potentially reclaimable data; it does not mark files for deletion.
 - Cleanup → **Worth a look** lists up to 100 nonoverlapping indexed cache/build/worktree/old-experiment hints of at least 64 MiB. Incomplete coverage/allocation is disclosed. Click a path to inspect it on the map. Existing NuGet/pip hints and maintenance instructions remain under **Observed caches**.
@@ -91,7 +91,15 @@ In alpha.4, review also shows known physical reclaim on the scanned volume. Unkn
 - Git is discovered only in OS-known `Program Files\Git`, `Program Files (x86)\Git` or `%LOCALAPPDATA%\Programs\Git` installation directories. Arbitrary PATH entries and portable/custom installations elsewhere are not executed; those configurations report Git unavailable.
 - Manual review repeats Git inspection for at most 8 selected roots, before separate permanent confirmation. These counters are advisory and can become stale; native file/ancestor revalidation remains authoritative. Git processes have a 5-second total inspection limit and a 1 MiB combined output budget, with external subprocesses refused and cancellation terminating their Windows job.
 
-Navigation/age/depth options, system appearance, global UI scaling and selected-path text/prompt export remain outside this port phase. Manual UAC/tray/logon acceptance is still pending.
+## Navigation and display — alpha.5 development
+
+- Switch category/age colors without changing the selected physical/logical/file-count area metric. Last-write bands are unknown/future, up to 7/30/180/365 days and older; age is not evidence of junk. Choose 1–6 drawn levels and hide dot/Windows hidden/system subtrees from the map, search and current Largest lists. The full retained scan and marks remain intact.
+- Breadcrumb menus list siblings ranked by the visible selected metric. Above-root breadcrumbs widen an ordinary scan and focus the previous root. A compatible small ordinary subtree may be reused (32 MiB / 100,000 entries / depth 64); the sidebar labels cached observations. Native root identity and timestamps are checked before/after the traversal; changed roots, fast indexes and deletion attempts do not reuse the cache. Failed/cancelled widening preserves completed results.
+- Wheel zoom enters a directory on the next notch after it fills the viewport; zooming out at base scale goes up. Arrows/Tab select tiles/siblings, Space marks, Enter enters, right click opens Explorer. The **Keys** dialog lists search, depth, hidden, age, export and rescan shortcuts. Typing in native editors stays separate from map keys.
+- Resize the sidebar by dragging its divider; double click or **Reset sidebar width** restores 225 px. Settings offers system/light/dark appearance and 75–150% interface scale, independent of map zoom. **Save** persists display choices; Ctrl+plus/minus/0 changes/resets interface scale.
+- **Save selected TXT** writes outermost indexed selected paths to a new file. **Copy review prompt** copies a localized advisory text with escaped path data. Exports contain private paths; inspect them before sharing. These actions never execute commands or authorize deletion; snapshot JSON remains available.
+
+Windows feature groups above are implemented against pinned disktree `6c8d4ce`; platform-specific macOS monitoring/permissions and upstream Trash behavior are outside this Windows app. Permanent deletion with separate confirmation remains the chosen policy. Manual UAC/tray/logon and desktop visual acceptance is still pending.
 
 Disk map layout and NTFS parsing are adapted from [disktree](https://github.com/tobi/disktree), under MIT; see the [vendored core license](rust/vendor/disktree-core/LICENSE). The portable archive includes full dependency notices in `ThirdParty/`.
 

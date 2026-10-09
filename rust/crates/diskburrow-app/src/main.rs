@@ -1,4 +1,5 @@
 #![windows_subsystem = "windows"]
+mod appearance;
 mod contract;
 mod git_inspection;
 mod helper;
@@ -10,6 +11,8 @@ mod operation;
 mod platform;
 mod recommendations;
 mod runtime;
+mod scan_cache;
+mod selection_export;
 mod ui;
 mod verify;
 

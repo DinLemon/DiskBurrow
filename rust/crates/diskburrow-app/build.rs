@@ -24,8 +24,8 @@ fn main() {
         format!(
             r#"1 ICON "{icon}"
 1 VERSIONINFO
-FILEVERSION 0,3,0,4
-PRODUCTVERSION 0,3,0,4
+FILEVERSION 0,3,0,5
+PRODUCTVERSION 0,3,0,5
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x2L
 FILEOS 0x40004L
@@ -37,11 +37,11 @@ BEGIN
   BEGIN
    VALUE "CompanyName", "DinLemon\0"
    VALUE "FileDescription", "DiskBurrow Rust preview\0"
-   VALUE "FileVersion", "0.3.0-alpha.4\0"
+   VALUE "FileVersion", "0.3.0-alpha.5\0"
    VALUE "InternalName", "DiskBurrow\0"
    VALUE "OriginalFilename", "DiskBurrow.exe\0"
    VALUE "ProductName", "DiskBurrow\0"
-   VALUE "ProductVersion", "0.3.0-alpha.4\0"
+   VALUE "ProductVersion", "0.3.0-alpha.5\0"
   END
  END
  BLOCK "VarFileInfo"

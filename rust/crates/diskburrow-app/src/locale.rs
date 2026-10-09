@@ -98,6 +98,47 @@ pub fn text(language: &str, key: &str) -> String {
 
 // Imported verbatim from the original 0.2.2 WPF locale resources.
 const EXTRA_TRANSLATIONS: &[(&str, &str, &str)] = &[
+    (
+        "Map.Cached",
+        "Часть данных из кеша предыдущего сканирования; это не свежая проверка.",
+        "Some observations reused from the previous scan; these are not fresh checks.",
+    ),
+    ("Map.Visible", "Видимое", "Visible"),
+    ("Map.FullScan", "Полное сканирование", "Full scan"),
+    (
+        "Age.Note",
+        "Возраст изменения — не признак мусора.",
+        "Last-write age is not evidence of junk.",
+    ),
+    ("Settings.Theme.System", "Системная", "System"),
+    ("Display.Scale", "Масштаб интерфейса", "Interface scale"),
+    ("Display.Help", "Клавиши", "Keys"),
+    ("Display.Hidden", "Скрытые", "Hidden"),
+    ("Display.Depth", "Глубина", "Depth"),
+    (
+        "Display.SidebarReset",
+        "Сбросить ширину панели",
+        "Reset sidebar width",
+    ),
+    ("Display.Siblings", "Соседние объекты", "Sibling objects"),
+    ("Age.Mode", "Возраст / категории", "Age / categories"),
+    ("Age.Unknown", "Неизвестно / будущее", "Unknown / future"),
+    ("Age.7", "До 7 дней", "Within 7 days"),
+    ("Age.30", "8–30 дней", "8–30 days"),
+    ("Age.180", "31–180 дней", "31–180 days"),
+    ("Age.365", "181–365 дней", "181–365 days"),
+    ("Age.Older", "Более года", "Older than a year"),
+    ("Selection.Save", "Выбранное в TXT", "Save selected TXT"),
+    (
+        "Selection.Copy",
+        "Скопировать запрос для разбора",
+        "Copy review prompt",
+    ),
+    (
+        "Display.Keys",
+        "Стрелки: выбрать плитку. Tab / Shift+Tab: соседние объекты. Enter: открыть папку. Пробел / Ctrl+клик: отметить. Backspace / Esc: вверх. Alt+←/→: история. + / − / 0: масштаб карты. [ / ]: глубина. A: возраст. H: скрытые. I: изолировать поиск. G: глобальный поиск. F / /: поиск. E / правый клик: Проводник. S: TXT. P: запрос для разбора. C: снять отметки. F5: пересканировать. Ctrl+O: выбрать папку. Ctrl+ +/−/0: масштаб интерфейса. Колесо: масштаб, затем вход в заполнившую карту папку; назад на базовом масштабе — вверх. Shift+колесо / средняя кнопка: перемещение. Перетаскивание разделителя: ширина панели; двойной клик: сброс. Экспорт содержит пути выбранных данных; перед передачей проверьте их.",
+        "Arrows: select a tile. Tab / Shift+Tab: siblings. Enter: enter folder. Space / Ctrl+click: mark. Backspace / Esc: up. Alt+Left/Right: history. + / - / 0: map zoom. [ / ]: depth. A: age. H: hidden. I: isolate search. G: global search. F / /: search. E / right click: Explorer. S: TXT. P: review prompt. C: clear marks. F5: rescan. Ctrl+O: choose folder. Ctrl+ +/−/0: interface scale. Wheel: zoom, then enter a folder filling the viewport; zoom out at base scale goes up. Shift+wheel / middle button: pan. Drag divider: sidebar width; double click: reset. Exports contain selected data paths; inspect them before sharing.",
+    ),
     ("Insights.Title", "Стоит посмотреть", "Worth a look"),
     (
         "Insights.Note",

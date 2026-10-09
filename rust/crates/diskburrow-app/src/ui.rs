@@ -91,6 +91,16 @@ pub struct App {
     pub map_focus: FocusHandle,
     pub map_drag: Option<(f32, f32)>,
     pub focused_tile: Option<usize>,
+    pub pointer_tile: Option<usize>,
+    pub keyboard_target: bool,
+    pub sidebar_drag: bool,
+    keys_open: bool,
+    siblings_open: Option<usize>,
+    base_rem: f32,
+    crumbs_scroll: gpui_kit::ScrollHandle,
+    crumbs_path: String,
+    system_dark: Option<bool>,
+    appearance_polled: std::time::Instant,
     root: Entity<InputState>,
     search: Entity<InputState>,
     filter: Entity<InputState>,
@@ -187,7 +197,13 @@ impl App {
                     .await;
                 if this
                     .update_in(cx, |this, window, cx| {
-                        let changed = this.runtime.poll();
+                        let mut changed = this.runtime.poll();
+                        if this.appearance_polled.elapsed() >= Duration::from_secs(2) {
+                            let dark = crate::appearance::system_dark();
+                            changed |= dark != this.system_dark;
+                            this.system_dark = dark;
+                            this.appearance_polled = std::time::Instant::now();
+                        }
                         if this.runtime.take_show() {
                             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                             if let Ok(handle) = window.window_handle()
@@ -231,6 +247,16 @@ impl App {
             map_focus: cx.focus_handle(),
             map_drag: None,
             focused_tile: None,
+            pointer_tile: None,
+            keyboard_target: true,
+            sidebar_drag: false,
+            keys_open: false,
+            siblings_open: None,
+            base_rem: window.rem_size().as_f32(),
+            crumbs_scroll: gpui_kit::ScrollHandle::new(),
+            crumbs_path: String::new(),
+            system_dark: crate::appearance::system_dark(),
+            appearance_polled: std::time::Instant::now(),
             dialog_focus: cx.focus_handle(),
             confirmation: ConfirmationGate::default(),
             export_disclosure: false,
@@ -254,9 +280,13 @@ impl App {
                 | Command::MapMetric(_)
                 | Command::MapGlobal(_)
                 | Command::MapIsolate(_)
+                | Command::MapWiden(_)
+                | Command::Setting(Setting::MapDepth | Setting::ShowHidden, _)
         ) {
             self.transform = ViewTransform::default();
             self.focused_tile = None;
+            self.pointer_tile = None;
+            self.siblings_open = None;
         }
         self.runtime.command(command);
         cx.notify();
@@ -265,7 +295,60 @@ impl App {
         crate::locale::text(&self.runtime.view().settings.language, key)
     }
     fn palette(&self) -> Palette {
-        Palette::new(&self.runtime.view().settings.theme)
+        Palette::new(crate::appearance::resolve(
+            &self.runtime.view().settings.theme,
+            self.system_dark,
+        ))
+    }
+    fn scaled(&self, value: f32) -> Pixels {
+        px(value * self.runtime.view().settings.ui_scale_percent as f32 / 100.)
+    }
+    fn interface_zoom(&mut self, direction: i8, cx: &mut Context<Self>) {
+        let steps = [75, 90, 100, 110, 125, 150];
+        let current = steps
+            .iter()
+            .position(|s| *s == self.runtime.view().settings.ui_scale_percent)
+            .unwrap_or(2);
+        let next = if direction == 0 {
+            2
+        } else {
+            (current as i8 + direction).clamp(0, 5) as usize
+        };
+        self.dispatch(
+            Command::Setting(Setting::UiScale, steps[next].to_string()),
+            cx,
+        );
+    }
+    pub(crate) fn active_tile(&self) -> Option<usize> {
+        if self.keyboard_target {
+            self.focused_tile
+        } else {
+            self.pointer_tile.or(self.focused_tile)
+        }
+    }
+    fn export_marked(&mut self, cx: &mut Context<Self>) {
+        let directory = PathBuf::from(&self.runtime.view().root);
+        let selected = cx.prompt_for_new_path(&directory, Some("DiskBurrow-selected.txt"));
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(path))) = selected.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.dispatch(
+                        Command::ExportSelection(path.to_string_lossy().into_owned()),
+                        cx,
+                    )
+                });
+            }
+        })
+        .detach();
+    }
+    fn copy_marked(&mut self, cx: &mut Context<Self>) {
+        if let Some(export) = self
+            .runtime
+            .selected_export()
+            .filter(|export| export.count > 0)
+        {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(export.prompt));
+        }
     }
     fn button(
         &self,
@@ -279,8 +362,8 @@ impl App {
         Button::new(id.to_owned())
             .accessibility_label(label.clone())
             .disabled(!enabled)
-            .px_3()
-            .h(px(32.))
+            .px(px(8.))
+            .h(self.scaled(32.))
             .flex()
             .items_center()
             .justify_center()
@@ -288,7 +371,7 @@ impl App {
             .border_color(p.border)
             .bg(p.panel)
             .text_color(if enabled { p.text } else { p.muted })
-            .text_size(px(12.))
+            .text_size(self.scaled(12.))
             .child(label)
             .on_click(cx.listener(move |this, _, _, cx| this.dispatch(command.clone(), cx)))
     }
@@ -302,8 +385,8 @@ impl App {
         let p = self.palette();
         Button::new(id.to_owned())
             .accessibility_label(label.clone())
-            .px_3()
-            .h(px(32.))
+            .px(px(8.))
+            .h(self.scaled(32.))
             .flex()
             .items_center()
             .justify_center()
@@ -311,7 +394,7 @@ impl App {
             .border_color(p.border)
             .bg(p.panel)
             .text_color(p.text)
-            .text_size(px(12.))
+            .text_size(self.scaled(12.))
             .child(label)
             .on_click(cx.listener(move |this, _, window, cx| action(this, window, cx)))
     }
@@ -333,7 +416,7 @@ impl App {
             .flex()
             .items_center()
             .gap_2()
-            .text_size(px(12.))
+            .text_size(self.scaled(12.))
             .text_color(p.text)
             .child(
                 div()
@@ -366,7 +449,7 @@ impl App {
         let field = state.clone();
         InputBase::new(id.to_owned())
             .focused(focus)
-            .h(px(33.))
+            .h(self.scaled(33.))
             .min_w_0()
             .w_full()
             .px_2()
@@ -374,7 +457,7 @@ impl App {
             .border_color(p.border)
             .bg(p.panel)
             .text_color(p.text)
-            .text_size(px(13.))
+            .text_size(self.scaled(13.))
             .on_mouse_down(gpui_kit::MouseButton::Left, move |_, window, cx| {
                 field.update(cx, |state, cx| state.focus(window, cx))
             })
@@ -396,13 +479,13 @@ impl App {
     }
     fn note(&self, text: String) -> Div {
         div()
-            .text_size(px(12.))
+            .text_size(self.scaled(12.))
             .text_color(self.palette().muted)
             .child(text)
     }
     fn title(&self, key: &str) -> Div {
         div()
-            .text_size(px(20.))
+            .text_size(self.scaled(20.))
             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
             .child(self.text(key))
     }
@@ -446,11 +529,13 @@ impl App {
         let p = self.palette();
         let root = self.edit("scan-root", &self.root, window, cx);
         div()
+            .id("app-top")
+            .test_support()
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .gap_2()
-            .p_3()
+            .gap(px(6.))
+            .p(px(8.))
             .bg(p.panel)
             .border_b_1()
             .border_color(p.border)
@@ -464,7 +549,7 @@ impl App {
                             .w(px(145.))
                             .flex_shrink_0()
                             .font_weight(gpui_kit::FontWeight::BOLD)
-                            .text_size(px(19.))
+                            .text_size(self.scaled(19.))
                             .child("DiskBurrow"),
                     )
                     .child(div().flex_1().min_w_0().child(root))
@@ -489,7 +574,7 @@ impl App {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(px(6.))
                     .child(self.button(
                         "scan-normal",
                         self.text("Action.Scan"),
@@ -564,7 +649,7 @@ impl App {
                     .min_h(px(44.))
                     .px_3()
                     .py_2()
-                    .text_size(px(12.))
+                    .text_size(self.scaled(12.))
                     .bg(if self.page == page { p.inset } else { p.panel })
                     .text_color(if self.page == page { p.accent } else { p.text })
                     .child(label)
@@ -600,6 +685,8 @@ impl App {
             .collect();
         let is_select = matches!(kind, TableKind::Mark | TableKind::Cleanup);
         let mut header = div()
+            .id(format!("{id}-header"))
+            .test_support()
             .flex()
             .gap_2()
             .items_center()
@@ -607,7 +694,7 @@ impl App {
             .flex_shrink_0()
             .px_2()
             .bg(p.inset)
-            .text_size(px(11.))
+            .text_size(self.scaled(11.))
             .text_color(p.muted);
         if is_select {
             header = header.child(div().w(px(56.)).flex_shrink_0().child(self.text("Select")));
@@ -646,7 +733,7 @@ impl App {
                             .role(gpui_kit::Role::Row)
                             .test_support()
                             .aria_label(row.path.clone())
-                            .h(px(34.))
+                            .h(this.scaled(34.))
                             .px_2()
                             .flex()
                             .gap_2()
@@ -658,7 +745,7 @@ impl App {
                             } else {
                                 p.panel
                             })
-                            .text_size(px(12.))
+                            .text_size(this.scaled(12.))
                             .overflow_hidden();
                         if is_select {
                             let command = if matches!(kind, TableKind::Cleanup) {
@@ -781,6 +868,8 @@ impl App {
         .min_h_0()
         .w_full();
         div()
+            .id(format!("{id}-container"))
+            .test_support()
             .flex()
             .flex_col()
             .min_h_0()
@@ -800,7 +889,16 @@ impl App {
             })
     }
     fn overview(&self, view: &UiView, cx: &Context<Self>) -> impl IntoElement + use<> {
-        let mut cards = div().flex().flex_wrap().gap_3();
+        let mut cards = div()
+            .id("overview-cards")
+            .test_support()
+            .flex()
+            .flex_wrap()
+            .gap_3()
+            .max_h(px(160.))
+            .min_h_0()
+            .flex_shrink_0()
+            .overflow_y_scroll();
         for (index, (key, value)) in view.overview.iter().enumerate() {
             cards = cards.child(
                 self.panel(&format!("overview-{index}"))
@@ -810,7 +908,7 @@ impl App {
                     .child(gpui_omarchy::with_tooltip(
                         div()
                             .id(format!("overview-value-{index}"))
-                            .text_size(px(22.))
+                            .text_size(self.scaled(22.))
                             .text_ellipsis()
                             .child(value.clone()),
                         value.clone(),
@@ -820,7 +918,7 @@ impl App {
         div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(px(8.))
             .size_full()
             .min_h_0()
             .child(self.title("Nav.Overview"))
@@ -829,7 +927,7 @@ impl App {
                 div()
                     .id("volume-stamp")
                     .h(px(18.))
-                    .text_size(px(11.))
+                    .text_size(self.scaled(11.))
                     .text_ellipsis()
                     .child(view.volume_stamp.clone()),
                 view.volume_stamp.clone(),
@@ -969,34 +1067,57 @@ impl App {
             .flex()
             .flex_wrap()
             .gap_1()
-            .text_size(px(10.));
-        for category in crate::recommendations::legend() {
-            legend = legend.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .w(px(7.))
-                            .h(px(7.))
-                            .bg(map_view::category_color(category)),
-                    )
-                    .child(crate::locale::text(
-                        &self.runtime.view().settings.language,
-                        crate::recommendations::category_key(category),
-                    )),
-            );
+            .text_size(self.scaled(10.));
+        if self.runtime.view().map_color == 1 {
+            for (key, color) in [
+                ("Age.Unknown", 0x697784),
+                ("Age.7", 0x397c70),
+                ("Age.30", 0x487caf),
+                ("Age.180", 0x8a8545),
+                ("Age.365", 0xac733e),
+                ("Age.Older", 0x8f4b62),
+            ] {
+                legend = legend.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(div().w(px(7.)).h(px(7.)).bg(rgb(color)))
+                        .child(self.text(key)),
+                );
+            }
+        } else {
+            for category in crate::recommendations::legend() {
+                legend = legend.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .w(px(7.))
+                                .h(px(7.))
+                                .bg(map_view::category_color(category)),
+                        )
+                        .child(crate::locale::text(
+                            &self.runtime.view().settings.language,
+                            crate::recommendations::category_key(category),
+                        )),
+                );
+            }
         }
         div()
             .flex()
             .flex_col()
             .gap_1()
             .child(legend)
+            .when(self.runtime.view().map_color == 1, |element| {
+                element.child(self.note(self.text("Age.Note")))
+            })
             .child(gpui_omarchy::with_tooltip(
                 div()
                     .id("map-hatch-note")
-                    .text_size(px(10.))
+                    .text_size(self.scaled(10.))
                     .text_ellipsis()
                     .child(self.text("Reclaim.Hatch")),
                 self.text("Reclaim.Hatch"),
@@ -1009,7 +1130,7 @@ impl App {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let filter = self.edit("cleanup-filter", &self.filter, window, cx);
-        let mut categories = div().flex().flex_wrap().gap_1();
+        let mut categories = div().flex().flex_wrap().gap(px(4.));
         for (index, category) in view.cleanup_categories.iter().enumerate() {
             let label = if category.is_empty() {
                 self.text("All")
@@ -1028,7 +1149,7 @@ impl App {
             4 => div()
                 .flex()
                 .flex_col()
-                .gap_2()
+                .gap(px(4.))
                 .flex_1()
                 .min_h_0()
                 .child(
@@ -1042,7 +1163,7 @@ impl App {
                 .child(gpui_omarchy::with_tooltip(
                     div()
                         .id("insights-note")
-                        .text_size(px(11.))
+                        .text_size(self.scaled(11.))
                         .text_ellipsis()
                         .child(self.text("Insights.Note")),
                     self.text("Insights.Note"),
@@ -1056,7 +1177,7 @@ impl App {
                 ))
                 .into_any_element(),
             3 => {
-                let mut buttons = div().flex().flex_wrap().gap_1();
+                let mut buttons = div().flex().flex_wrap().gap(px(4.));
                 for (index, label) in [
                     self.text("Action.Storage"),
                     self.text("Recommend.Chrome"),
@@ -1078,7 +1199,7 @@ impl App {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap(px(4.))
                     .flex_1()
                     .min_h_0()
                     .child(self.note(self.text("Recommend.Text")))
@@ -1087,7 +1208,7 @@ impl App {
                         div()
                             .id("observed-cache-limit")
                             .h(px(18.))
-                            .text_size(px(11.))
+                            .text_size(self.scaled(11.))
                             .text_ellipsis()
                             .child(self.text("Recommend.Limit")),
                         self.text("Recommend.Limit"),
@@ -1132,7 +1253,7 @@ impl App {
         div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap(px(4.))
             .size_full()
             .min_h_0()
             .child(self.title("Nav.Cleanup"))
@@ -1140,7 +1261,7 @@ impl App {
                 div()
                     .id("cleanup-scope")
                     .h(px(18.))
-                    .text_size(px(11.))
+                    .text_size(self.scaled(11.))
                     .text_ellipsis()
                     .child(self.text("Cleanup.Scope")),
                 self.text("Cleanup.Scope"),
@@ -1148,7 +1269,7 @@ impl App {
             .child(
                 div()
                     .flex()
-                    .gap_2()
+                    .gap(px(4.))
                     .child(self.button(
                         "analyze-cleanup",
                         self.text("Action.Analyze"),
@@ -1181,7 +1302,7 @@ impl App {
             .child(
                 div()
                     .flex()
-                    .gap_2()
+                    .gap(px(4.))
                     .items_center()
                     .child(div().w(px(100.)).child(self.text("Filter")))
                     .child(div().flex_1().child(filter)),
@@ -1189,7 +1310,7 @@ impl App {
             .child(
                 div()
                     .flex()
-                    .gap_1()
+                    .gap(px(4.))
                     .child(self.local_button(
                         "cleanup-tab-candidates",
                         self.text("Cleanup.Count"),
@@ -1231,7 +1352,7 @@ impl App {
                 body.child(
                     div()
                         .flex()
-                        .gap_1()
+                        .gap(px(4.))
                         .child(self.local_button(
                             "insights-worth-look",
                             self.text("Insights.Title"),
@@ -1258,7 +1379,7 @@ impl App {
                 div()
                     .id("cleanup-bound")
                     .h(px(18.))
-                    .text_size(px(11.))
+                    .text_size(self.scaled(11.))
                     .text_ellipsis()
                     .child(self.text("Cleanup.Bound")),
                 self.text("Cleanup.Bound"),
@@ -1295,7 +1416,7 @@ impl App {
                     div()
                         .w(px(235.))
                         .flex_shrink_0()
-                        .text_size(px(12.))
+                        .text_size(self.scaled(12.))
                         .child(label),
                 )
                 .child(div().flex_1().min_w_0().child(control))
@@ -1311,13 +1432,14 @@ impl App {
             .border_1()
             .border_color(p.border)
             .bg(p.panel)
-            .text_size(px(13.))
+            .text_size(self.scaled(13.))
             .on_mouse_down(gpui_kit::MouseButton::Left, move |_, window, cx| {
                 state.update(cx, |state, cx| state.focus(window, cx))
             })
             .child(Textarea::new(&self.exclusions));
         let mut fields = div()
             .id("settings-scroll")
+            .test_support()
             .flex()
             .flex_col()
             .gap_4()
@@ -1382,8 +1504,28 @@ impl App {
                         true,
                         cx,
                     ))
+                    .child(self.button(
+                        "theme-system",
+                        self.text("Settings.Theme.System"),
+                        Command::Setting(Setting::Theme, "system".into()),
+                        true,
+                        cx,
+                    ))
                     .into_any_element(),
             ))
+            .child(field("setting-scale", self.text("Display.Scale"), {
+                let mut row = div().flex().flex_wrap().gap_1();
+                for scale in [75, 90, 100, 110, 125, 150] {
+                    row = row.child(self.button(
+                        &format!("ui-scale-{scale}"),
+                        format!("{scale}%"),
+                        Command::Setting(Setting::UiScale, scale.to_string()),
+                        true,
+                        cx,
+                    ));
+                }
+                row.into_any_element()
+            }))
             .child(self.checkbox(
                 "settings-battery",
                 self.text("Settings.Battery"),
@@ -1445,48 +1587,90 @@ impl App {
             )
     }
     fn map(
-        &self,
+        &mut self,
         view: &UiView,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let search = self.edit("map-search", &self.search, window, cx);
-        let mut crumbs = div().flex().gap_1().min_w_0().overflow_hidden();
-        for (i, (index, label)) in view.map_breadcrumbs.iter().enumerate() {
-            crumbs = crumbs.child(self.button(
-                &format!("map-crumb-{i}"),
-                label.clone(),
-                Command::MapNavigate(*index),
-                true,
-                cx,
-            ));
+        let mut crumbs = div()
+            .id("map-crumbs-scroll")
+            .test_support()
+            .flex()
+            .gap(px(4.))
+            .min_w_0()
+            .overflow_x_scroll()
+            .track_scroll(&self.crumbs_scroll);
+        if view.map_path != self.crumbs_path {
+            self.crumbs_path = view.map_path.clone();
+            let n = view.map_parents.len() + view.map_breadcrumbs.len() * 2;
+            if n > 0 {
+                self.crumbs_scroll.scroll_to_item(n - 1);
+            }
         }
-        let controls = div()
+        for (i, (path, label)) in view.map_parents.iter().enumerate() {
+            crumbs = crumbs.child(
+                self.button(
+                    &format!("map-parent-{i}"),
+                    label.clone(),
+                    Command::MapWiden(path.clone()),
+                    !view.busy,
+                    cx,
+                )
+                .h(self.scaled(24.))
+                .max_w(px(160.))
+                .flex_shrink_0()
+                .text_ellipsis_middle(),
+            );
+        }
+        for (i, (index, label)) in view.map_breadcrumbs.iter().enumerate() {
+            let index = *index;
+            crumbs = crumbs
+                .child(
+                    self.button(
+                        &format!("map-crumb-{i}"),
+                        label.clone(),
+                        Command::MapNavigate(index),
+                        true,
+                        cx,
+                    )
+                    .h(self.scaled(24.))
+                    .max_w(px(160.))
+                    .flex_shrink_0()
+                    .text_ellipsis_middle(),
+                )
+                .child(
+                    self.local_button(
+                        &format!("map-siblings-{i}"),
+                        "▾".into(),
+                        move |this, _, cx| {
+                            this.siblings_open = Some(index);
+                            cx.notify();
+                        },
+                        cx,
+                    )
+                    .h(self.scaled(24.)),
+                );
+        }
+        let mut controls = div()
+            .id("map-controls")
+            .test_support()
             .flex()
             .flex_wrap()
-            .gap_1()
-            .child(self.button(
-                "map-back",
-                self.text("Map.Back"),
-                Command::MapBack,
-                true,
-                cx,
-            ))
-            .child(self.button(
-                "map-forward",
-                self.text("Map.Forward"),
-                Command::MapForward,
-                true,
-                cx,
-            ))
-            .child(self.button("map-up", self.text("Map.Up"), Command::MapUp, true, cx))
-            .child(self.button(
-                "map-root",
-                self.text("Map.Root"),
-                Command::MapRoot,
-                true,
-                cx,
-            ))
+            .gap(px(4.))
+            .child(
+                self.button("map-back", "←".into(), Command::MapBack, true, cx)
+                    .accessibility_label(self.text("Map.Back")),
+            )
+            .child(
+                self.button("map-forward", "→".into(), Command::MapForward, true, cx)
+                    .accessibility_label(self.text("Map.Forward")),
+            )
+            .child(self.button("map-up", "↑".into(), Command::MapUp, true, cx))
+            .child(
+                self.button("map-root", "⌂".into(), Command::MapRoot, true, cx)
+                    .accessibility_label(self.text("Map.Root")),
+            )
             .child(self.local_button(
                 "map-zoom-out",
                 "−".into(),
@@ -1501,20 +1685,28 @@ impl App {
             ))
             .child(self.local_button(
                 "map-zoom-reset",
-                self.text("Map.Reset"),
+                "1:1".into(),
                 |this, _, cx| {
                     this.transform = ViewTransform::default();
                     this.dispatch(Command::MapZoom(1.), cx);
                 },
                 cx,
+            ))
+            .child(self.local_button(
+                "map-help",
+                self.text("Display.Help"),
+                |this, _, cx| {
+                    this.keys_open = true;
+                    cx.notify();
+                },
+                cx,
             ));
-        let mut metrics = div().flex().gap_1();
         for (metric, key) in [
             (0, "Map.Metric.Allocated"),
             (1, "Map.Metric.Logical"),
             (2, "Map.Metric.Files"),
         ] {
-            metrics = metrics.child(self.button(
+            controls = controls.child(self.button(
                 &format!("map-metric-{metric}"),
                 self.text(key),
                 Command::MapMetric(metric),
@@ -1522,6 +1714,50 @@ impl App {
                 cx,
             ));
         }
+        controls = controls
+            .child(self.button(
+                "map-age",
+                self.text("Age.Mode"),
+                Command::MapColor(1 - view.map_color),
+                true,
+                cx,
+            ))
+            .child(self.checkbox(
+                "map-hidden",
+                self.text("Display.Hidden"),
+                view.settings.show_hidden,
+                Command::Setting(
+                    Setting::ShowHidden,
+                    (!view.settings.show_hidden).to_string(),
+                ),
+                true,
+                cx,
+            ))
+            .child(self.button(
+                "map-depth-less",
+                "[".into(),
+                Command::Setting(
+                    Setting::MapDepth,
+                    view.settings.map_depth.saturating_sub(1).max(1).to_string(),
+                ),
+                true,
+                cx,
+            ))
+            .child(self.note(format!(
+                "{}: {}",
+                self.text("Display.Depth"),
+                view.settings.map_depth
+            )))
+            .child(self.button(
+                "map-depth-more",
+                "]".into(),
+                Command::Setting(
+                    Setting::MapDepth,
+                    (view.settings.map_depth + 1).min(6).to_string(),
+                ),
+                true,
+                cx,
+            ));
         let bounds = self.map_bounds.get();
         let tiles = self.runtime.map_tiles(
             bounds.size.width.as_f32().max(180.),
@@ -1529,16 +1765,107 @@ impl App {
         );
         *self.map_tiles.borrow_mut() = tiles.clone();
         let canvas = map_view::canvas_view(self, tiles, self.palette(), cx);
-        div()
+        let divider = div()
+            .id("map-sidebar-divider")
+            .test_support()
+            .w(px(7.))
+            .flex_shrink_0()
+            .bg(self.palette().border)
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                    if event.click_count >= 2 {
+                        this.dispatch(Command::Setting(Setting::SidebarWidth, "225".into()), cx);
+                    } else {
+                        this.sidebar_drag = true;
+                    }
+                }),
+            );
+        let sidebar = div()
+            .id("map-sidebar")
+            .test_support()
+            .w(px(view.settings.sidebar_width as f32))
+            .max_w(gpui_kit::relative(0.45))
+            .flex_shrink_0()
+            .min_h_0()
             .flex()
             .flex_col()
             .gap_2()
+            .overflow_y_scroll()
+            .child(self.note(view.map_visible_summary.clone()))
+            .child(self.note(view.scan_reuse_notice.clone()))
+            .child(gpui_omarchy::with_tooltip(
+                div()
+                    .id("map-focused-path")
+                    .text_ellipsis_middle()
+                    .child(view.focused_path.clone()),
+                view.focused_path.clone(),
+            ))
+            .child(self.note(view.focused_summary.clone()))
+            .child(self.note(view.git_summary.clone()))
+            .child(self.map_legend())
+            .child(self.button(
+                "map-mark-focus",
+                self.text("Map.Mark"),
+                Command::MapMark(self.active_tile().unwrap_or(0)),
+                self.active_tile().is_some(),
+                cx,
+            ))
+            .child(self.button(
+                "map-review",
+                self.text("Manual.Analyze"),
+                Command::PreviewManual,
+                view.can_manual && !view.busy,
+                cx,
+            ))
+            .child(
+                self.local_button(
+                    "map-save-selected",
+                    self.text("Selection.Save"),
+                    |this, _, cx| this.export_marked(cx),
+                    cx,
+                )
+                .disabled(view.selected_count == 0 || view.busy),
+            )
+            .child(
+                self.local_button(
+                    "map-copy-prompt",
+                    self.text("Selection.Copy"),
+                    |this, _, cx| this.copy_marked(cx),
+                    cx,
+                )
+                .disabled(view.selected_count == 0),
+            )
+            .child(self.local_button(
+                "sidebar-reset",
+                self.text("Display.SidebarReset"),
+                |this, _, cx| {
+                    this.dispatch(Command::Setting(Setting::SidebarWidth, "225".into()), cx)
+                },
+                cx,
+            ))
+            .child(
+                div()
+                    .h(px(200.))
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .child(self.table(
+                        "map-object-list",
+                        view.map_objects.clone(),
+                        &["Logical"],
+                        TableKind::Map,
+                        cx,
+                    )),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
             .size_full()
             .min_h_0()
-            .child(self.title("Nav.Map"))
             .child(controls)
             .child(crumbs)
-            .child(metrics)
             .child(
                 div()
                     .flex()
@@ -1565,7 +1892,6 @@ impl App {
             .child(
                 div()
                     .flex()
-                    .gap_3()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
@@ -1578,74 +1904,9 @@ impl App {
                             .min_h(px(180.))
                             .child(canvas),
                     )
-                    .child(
-                        div()
-                            .w(px(225.))
-                            .flex_shrink_0()
-                            .min_h_0()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(self.note(format!(
-                                "{}: {}",
-                                self.text("Map.Matches"),
-                                view.map_matches
-                            )))
-                            .child(gpui_omarchy::with_tooltip(
-                                div()
-                                    .id("map-focused-path")
-                                    .text_ellipsis_middle()
-                                    .child(view.focused_path.clone()),
-                                view.focused_path.clone(),
-                            ))
-                            .child(self.note(view.focused_summary.clone()))
-                            .child(gpui_omarchy::with_tooltip(
-                                div()
-                                    .id("git-detail")
-                                    .max_h(px(72.))
-                                    .text_size(px(11.))
-                                    .overflow_hidden()
-                                    .child(view.git_summary.clone()),
-                                view.git_summary.clone(),
-                            ))
-                            .child(self.map_legend())
-                            .child(self.button(
-                                "map-mark-focus",
-                                self.text("Map.Mark"),
-                                Command::MapMark(self.focused_tile.unwrap_or(0)),
-                                self.focused_tile.is_some(),
-                                cx,
-                            ))
-                            .child(self.button(
-                                "map-review",
-                                self.text("Manual.Analyze"),
-                                Command::PreviewManual,
-                                view.can_manual && !view.busy,
-                                cx,
-                            ))
-                            .child(self.table(
-                                "map-object-list",
-                                view.map_objects.clone(),
-                                &["Logical"],
-                                TableKind::Map,
-                                cx,
-                            )),
-                    ),
+                    .child(divider)
+                    .child(sidebar),
             )
-            .child(gpui_omarchy::with_tooltip(
-                div()
-                    .id("map-help")
-                    .h(px(20.))
-                    .text_size(px(11.))
-                    .text_ellipsis()
-                    .text_color(self.palette().muted)
-                    .child(self.text("Map.Legend")),
-                format!(
-                    "{}\n{}",
-                    self.text("Map.AllocationNote"),
-                    self.text("Map.Keys")
-                ),
-            ))
     }
     pub fn zoom_center(&mut self, scale: f32, cx: &mut Context<Self>) {
         let bounds = self.map_bounds.get();
@@ -1656,15 +1917,28 @@ impl App {
         );
         self.dispatch(Command::MapZoom(self.transform.scale), cx);
     }
-    pub fn map_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    pub fn map_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirmation.is_open()
+            || self.runtime.view().review.is_some()
+            || self.keys_open
+            || self.siblings_open.is_some()
+        {
+            return;
+        }
         let key = event.keystroke.key.as_str();
+        let modifiers = event.keystroke.modifiers;
+        if modifiers.control {
+            return;
+        }
+        let target = self.active_tile();
         let command = match key {
-            "enter" => self.focused_tile.map(Command::MapNavigate),
-            "space" => self.focused_tile.map(Command::MapMark),
+            "enter" => target.map(Command::MapNavigate),
+            "space" => target.map(Command::MapMark),
             "backspace" | "escape" => Some(Command::MapUp),
-            "left" if event.keystroke.modifiers.alt => Some(Command::MapBack),
-            "right" if event.keystroke.modifiers.alt => Some(Command::MapForward),
+            "left" if modifiers.alt => Some(Command::MapBack),
+            "right" if modifiers.alt => Some(Command::MapForward),
             "left" | "right" | "up" | "down" => {
+                self.keyboard_target = true;
                 let direction = match key {
                     "left" => (-1., 0.),
                     "right" => (1., 0.),
@@ -1675,6 +1949,7 @@ impl App {
                     .map_tiles
                     .borrow()
                     .iter()
+                    .filter(|tile| tile.index != usize::MAX)
                     .map(|tile| map_view::HitRect {
                         index: tile.index,
                         x: tile.x,
@@ -1684,21 +1959,42 @@ impl App {
                         depth: tile.depth,
                     })
                     .collect::<Vec<_>>();
-                let next = self
-                    .focused_tile
-                    .and_then(|index| map_view::neighbor(&tiles, index, direction))
+                let next = target
+                    .and_then(|i| map_view::neighbor(&tiles, i, direction))
                     .or_else(|| {
-                        self.focused_tile
+                        target
                             .is_none()
-                            .then(|| tiles.first().map(|tile| tile.index))
+                            .then(|| tiles.first().map(|t| t.index))
                             .flatten()
                     });
-                if let Some(index) = next {
-                    self.focused_tile = Some(index);
-                    Some(Command::MapFocus(index))
-                } else {
-                    None
+                if let Some(i) = next {
+                    self.focused_tile = Some(i);
                 }
+                next.map(Command::MapFocus)
+            }
+            "tab" => {
+                self.keyboard_target = true;
+                let siblings = target.map(|i| self.runtime.siblings(i)).unwrap_or_default();
+                let current = target
+                    .and_then(|i| siblings.iter().position(|r| r.key == i.to_string()))
+                    .unwrap_or(0);
+                let n = siblings.len();
+                let next = if n == 0 {
+                    None
+                } else {
+                    siblings[if modifiers.shift {
+                        (current + n - 1) % n
+                    } else {
+                        (current + 1) % n
+                    }]
+                    .key
+                    .parse::<usize>()
+                    .ok()
+                };
+                if let Some(i) = next {
+                    self.focused_tile = Some(i);
+                }
+                next.map(Command::MapFocus)
             }
             "+" | "=" => {
                 self.zoom_center(self.transform.scale * 1.3, cx);
@@ -1712,8 +2008,53 @@ impl App {
                 self.transform = ViewTransform::default();
                 Some(Command::MapZoom(1.))
             }
-            _ => None,
+            "[" => Some(Command::Setting(
+                Setting::MapDepth,
+                self.runtime
+                    .view()
+                    .settings
+                    .map_depth
+                    .saturating_sub(1)
+                    .max(1)
+                    .to_string(),
+            )),
+            "]" => Some(Command::Setting(
+                Setting::MapDepth,
+                (self.runtime.view().settings.map_depth + 1)
+                    .min(6)
+                    .to_string(),
+            )),
+            "a" => Some(Command::MapColor(1 - self.runtime.view().map_color)),
+            "h" => Some(Command::Setting(
+                Setting::ShowHidden,
+                (!self.runtime.view().settings.show_hidden).to_string(),
+            )),
+            "i" => Some(Command::MapIsolate(!self.runtime.view().map_isolate)),
+            "g" => Some(Command::MapGlobal(!self.runtime.view().map_global)),
+            "f" | "/" => {
+                self.search.focus_handle(cx).focus(window, cx);
+                None
+            }
+            "e" => target
+                .and_then(|i| self.runtime.map_path(i))
+                .map(Command::Open),
+            "s" => {
+                self.export_marked(cx);
+                None
+            }
+            "p" => {
+                self.copy_marked(cx);
+                None
+            }
+            "c" => Some(Command::ClearMarks),
+            "?" | "f1" => {
+                self.keys_open = true;
+                cx.notify();
+                None
+            }
+            _ => return,
         };
+        cx.stop_propagation();
         if let Some(command) = command {
             self.dispatch(command, cx);
         }
@@ -1724,10 +2065,12 @@ impl App {
         title: String,
         content: impl IntoElement,
         footer: impl IntoElement,
-    ) -> Stateful<Div> {
+    ) -> impl IntoElement {
         let p = self.palette();
         div()
             .id(id.to_owned())
+            .role(gpui_kit::Role::Group)
+            .test_support()
             .absolute()
             .inset_0()
             .flex()
@@ -1752,7 +2095,7 @@ impl App {
                     .text_color(p.text)
                     .child(
                         div()
-                            .text_size(px(19.))
+                            .text_size(self.scaled(19.))
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                             .child(title),
                     )
@@ -1791,7 +2134,7 @@ impl App {
                         .aria_label(warning.clone())
                         .flex_shrink_0()
                         .text_color(self.palette().danger)
-                        .text_size(px(12.))
+                        .text_size(self.scaled(12.))
                         .child(warning.clone()),
                 );
             }
@@ -2011,12 +2354,88 @@ impl App {
                 .into_any_element(),
             );
         }
+        if self.keys_open {
+            let content = div()
+                .id("keys-content")
+                .flex()
+                .flex_col()
+                .min_h_0()
+                .overflow_y_scroll()
+                .text_size(self.scaled(12.))
+                .child(self.text("Display.Keys"));
+            overlays.push(
+                self.modal(
+                    "keys-dialog",
+                    self.text("Display.Help"),
+                    content,
+                    self.local_button(
+                        "keys-close",
+                        self.text("Action.Cancel"),
+                        |this, _, cx| {
+                            this.keys_open = false;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+            );
+        }
+        if let Some(target) = self.siblings_open {
+            let mut rows = div()
+                .id("siblings-scroll")
+                .flex()
+                .flex_col()
+                .gap_1()
+                .min_h_0()
+                .overflow_y_scroll();
+            for (i, row) in self.runtime.siblings(target).into_iter().enumerate() {
+                let Ok(index) = row.key.parse::<usize>() else {
+                    continue;
+                };
+                let label = format!("{} · {}", row.path, row.cells.join(" · "));
+                rows = rows.child(
+                    self.local_button(
+                        &format!("sibling-{i}"),
+                        label,
+                        move |this, _, cx| {
+                            this.siblings_open = None;
+                            this.dispatch(Command::MapNavigate(index), cx);
+                            this.dispatch(Command::MapFocus(index), cx);
+                        },
+                        cx,
+                    )
+                    .min_w_0()
+                    .text_ellipsis_middle(),
+                );
+            }
+            overlays.push(
+                self.modal(
+                    "siblings-dialog",
+                    self.text("Display.Siblings"),
+                    rows,
+                    self.local_button(
+                        "siblings-close",
+                        self.text("Action.Cancel"),
+                        |this, _, cx| {
+                            this.siblings_open = None;
+                            cx.notify();
+                        },
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+            );
+        }
         overlays
     }
 }
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.runtime.view().clone();
+        window.set_rem_size(px(
+            self.base_rem * view.settings.ui_scale_percent as f32 / 100.
+        ));
         if view.root != self.last_root {
             self.last_root = view.root.clone();
             self.root.update(cx, |state, cx| {
@@ -2043,7 +2462,7 @@ impl Render for App {
             .min_w_0()
             .min_h_0()
             .font_family("Segoe UI")
-            .text_size(px(13.))
+            .text_size(self.scaled(13.))
             .bg(p.background)
             .text_color(p.text)
             .child(top)
@@ -2060,7 +2479,7 @@ impl Render for App {
                             .flex_1()
                             .min_h_0()
                             .min_w_0()
-                            .p_3()
+                            .p(px(8.))
                             .overflow_hidden()
                             .child(body),
                     ),
@@ -2077,21 +2496,78 @@ impl Render for App {
                     .py_1()
                     .border_t_1()
                     .border_color(p.border)
-                    .text_size(px(12.))
+                    .text_size(self.scaled(12.))
                     .child(view.status.clone()),
             )
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                    if this.sidebar_drag
+                        && event.pressed_button == Some(gpui_kit::MouseButton::Left)
+                    {
+                        let bounds = this.map_bounds.get();
+                        // The canvas's right edge plus the existing sidebar is the pane's fixed right edge.
+                        let right = bounds.origin.x.as_f32()
+                            + bounds.size.width.as_f32()
+                            + 7.
+                            + this.runtime.view().settings.sidebar_width as f32;
+                        let width = (right - event.position.x.as_f32())
+                            .round()
+                            .clamp(180., 420.) as u16;
+                        if width != this.runtime.view().settings.sidebar_width {
+                            this.dispatch(
+                                Command::Setting(Setting::SidebarWidth, width.to_string()),
+                                cx,
+                            );
+                        }
+                    } else {
+                        this.sidebar_drag = false;
+                    }
+                }),
+            )
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, _| this.sidebar_drag = false),
+            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                if key == "escape" {
                     if this.confirmation.is_open() {
                         this.confirmation.dismiss();
+                    } else if this.keys_open {
+                        this.keys_open = false;
+                    } else if this.siblings_open.is_some() {
+                        this.siblings_open = None;
                     } else if this.export_disclosure {
                         this.export_disclosure = false;
                     } else if this.volumes_open {
                         this.volumes_open = false;
                     } else if this.runtime.view().review.is_some() {
                         this.dispatch(Command::DismissReview, cx);
+                    } else if this.page == Page::Map {
+                        this.search
+                            .update(cx, |state, cx| state.set_value("", window, cx));
+                        this.dispatch(Command::MapSearch(String::new()), cx);
                     }
                     cx.notify();
+                } else if !this.confirmation.is_open()
+                    && this.runtime.view().review.is_none()
+                    && !this.keys_open
+                    && this.siblings_open.is_none()
+                {
+                    if event.keystroke.modifiers.control {
+                        match key {
+                            "+" | "=" => this.interface_zoom(1, cx),
+                            "-" => this.interface_zoom(-1, cx),
+                            "0" => this.interface_zoom(0, cx),
+                            "o" => this.choose_folder(cx),
+                            _ => return,
+                        }
+                    } else if key == "f5" && !this.runtime.view().busy {
+                        this.dispatch(Command::Scan(false), cx);
+                    } else {
+                        return;
+                    }
+                    cx.stop_propagation();
                 }
             }));
         if let Some(error) = view.error.clone() {
@@ -2106,7 +2582,7 @@ impl Render for App {
                     .p_2()
                     .bg(p.panel)
                     .text_color(p.danger)
-                    .text_size(px(12.))
+                    .text_size(self.scaled(12.))
                     .child(error),
             );
         }
@@ -2122,6 +2598,31 @@ mod tests {
     use super::*;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{TestAppContext, size};
+    #[gpui_kit::test]
+    fn port_map_exposes_remaining_controls_in_minimum_window(cx: &mut TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        cx.update(gpui_omarchy::init);
+        let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+            App::new(
+                Runtime::new(fixture.path().join("data")).unwrap(),
+                window,
+                cx,
+            )
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("nav-map", cx);
+            assert!(window.find("map-help").visible());
+            assert!(window.find("map-age").visible());
+            assert!(window.find("map-hidden").visible());
+            assert!(window.find("map-depth-more").visible());
+            window.click("map-help", cx);
+            assert!(window.find("keys-dialog").visible());
+            window.click("keys-close", cx);
+            assert!(window.find("map-viewport").bounds().size.height >= px(180.));
+        })
+        .unwrap();
+    }
     #[gpui_kit::test]
     fn long_eight_root_review_keeps_rows_and_confirmation_actions_visible(cx: &mut TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();
@@ -2389,3 +2890,7 @@ mod tests {
         .unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "ui_port_tests.rs"]
+mod port_tests;

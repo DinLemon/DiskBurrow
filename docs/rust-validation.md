@@ -1,4 +1,33 @@
-# Rust client validation — 2026-10-08
+# Rust client validation — 2026-10-09
+
+## Alpha.5 navigation/display candidate
+
+Adds age/depth/hidden projections, pointer/keyboard and breadcrumb sibling navigation,
+ordinary above-root widening with a bounded identity-checked subtree cache, adjustable
+sidebar, system appearance, independent persisted interface scale, selected TXT and
+advisory prompt rendering. Native deletion authority/helper/history protocol remain
+unchanged. Existing published alpha.3 and stable 0.2.2 assets remain unchanged.
+
+Focused runtime/frame verification passes: widening success/cancel/failure retention,
+marks/full snapshot preservation, hidden lists/search/navigation, settings restart,
+new-file export without overwrite or deletion, native editor typing and separate map/UI
+zoom. Minimum 880×600 frames cover 18 RU/EN, light/dark/system, 75/100/150% variants.
+A reproduced 150% viewport overflow was fixed with compact fixed header padding.
+
+Cache regressions reproduced a root replacement binding race and canonical/raw path
+mismatch (admitted but unused Known subtree). Before/after native identity plus exact
+last-write precision and correctly spelled walker paths fix both; five cache cases
+pass. The cache is bounded by 32 MiB/100000 entries/depth64 and cleared on deletion.
+Cached observations are labelled rather than claimed fresh. Hidden navigation and
+Largest-list leaks were reproduced and fixed while retaining the full scan and marks.
+
+Locked Windows workspace: **383 passed, 0 failed, 7 ignored** (application109;
+engine34; services33; native/platform43; vendored core164). Six ignored Git entrypoints
+are exercised by parent tests; one is the existing upstream timing test.
+Whole-workspace format and all-target strict Clippy pass. Portable source/hash and
+hosted CI evidence is recorded for the final clean head after this pass. These are programmatic frames and real EXE checks, not
+manual UAC approval/denial, tray/logon or desktop visual acceptance. macOS-specific
+monitoring/permission and upstream Trash flows are outside this Windows port.
 
 ## Alpha.4 insights candidate
 

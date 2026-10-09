@@ -75,6 +75,102 @@ impl ViewTransform {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WheelAction {
+    Ignore,
+    Pan { dy: f32 },
+    Zoom { scale: f32 },
+    Navigate(usize),
+    Up,
+}
+
+pub fn wheel_action(
+    transform: ViewTransform,
+    lines: f32,
+    shift: bool,
+    viewport: (f32, f32),
+    pointer: (f32, f32),
+    tiles: &[(HitRect, bool)],
+) -> WheelAction {
+    if !lines.is_finite()
+        || lines.abs() < f32::EPSILON
+        || !transform.scale.is_finite()
+        || transform.scale <= 0.
+        || !transform.x.is_finite()
+        || !transform.y.is_finite()
+        || !viewport.0.is_finite()
+        || !viewport.1.is_finite()
+        || viewport.0 <= 0.
+        || viewport.1 <= 0.
+        || !pointer.0.is_finite()
+        || !pointer.1.is_finite()
+        || pointer.0 < 0.
+        || pointer.1 < 0.
+        || pointer.0 >= viewport.0
+        || pointer.1 >= viewport.1
+    {
+        return WheelAction::Ignore;
+    }
+    if shift {
+        let dy = lines * 30.;
+        return if dy.is_finite() {
+            WheelAction::Pan { dy }
+        } else {
+            WheelAction::Ignore
+        };
+    }
+    if lines < 0. && transform.scale <= 1. {
+        return WheelAction::Up;
+    }
+    if lines > 0. {
+        // Inspect the current transform, so the event that fills a directory only zooms.
+        let filled = tiles
+            .iter()
+            .filter(|(tile, directory)| {
+                let left = (tile.x - transform.x) * transform.scale;
+                let top = (tile.y - transform.y) * transform.scale;
+                let right = left + tile.width * transform.scale;
+                let bottom = top + tile.height * transform.scale;
+                *directory
+                    && tile.index != usize::MAX
+                    && tile.width > 0.
+                    && tile.height > 0.
+                    && [left, top, right, bottom]
+                        .iter()
+                        .all(|value| value.is_finite())
+                    && left <= 0.5
+                    && top <= 0.5
+                    && right >= viewport.0 - 0.5
+                    && bottom >= viewport.1 - 0.5
+            })
+            .max_by_key(|(tile, _)| tile.depth);
+        if let Some((tile, _)) = filled {
+            return WheelAction::Navigate(tile.index);
+        }
+    }
+    let scale = (transform.scale * if lines > 0. { 1.15 } else { 1. / 1.15 }).clamp(1., 16.);
+    if scale == transform.scale {
+        WheelAction::Ignore
+    } else {
+        WheelAction::Zoom { scale }
+    }
+}
+
+fn label_font_size(percent: u16) -> f32 {
+    11. * f32::from(percent) / 100.
+}
+
+fn age_rgb(age: u8) -> u32 {
+    match age {
+        1 => 0x397c70,
+        2 => 0x487caf,
+        3 => 0x8a8545,
+        4 => 0xac733e,
+        5 => 0x8f4b62,
+        _ => 0x697784,
+    }
+}
+
 use crate::{
     contract::{Command, MapTile},
     ui::{App, Palette},
@@ -95,7 +191,10 @@ pub fn canvas_view(
 ) -> impl IntoElement {
     let measured = app.map_bounds.clone();
     let transform = app.transform;
-    let focused = app.focused_tile;
+    let focused = app.active_tile();
+    let color_mode = app.runtime.view().map_color;
+    let interface_scale = f32::from(app.runtime.view().settings.ui_scale_percent) / 100.;
+    let font_size = label_font_size(app.runtime.view().settings.ui_scale_percent);
     div()
         .id("map-viewport")
         .role(gpui_kit::Role::Group)
@@ -126,23 +225,23 @@ pub fn canvas_view(
                 MouseButton::Navigate(NavigationDirection::Forward) => {
                     this.dispatch(Command::MapForward, cx)
                 }
-                MouseButton::Left => {
-                    let (x, y) = this.transform.base(x, y);
-                    let hits = this
-                        .map_tiles
-                        .borrow()
-                        .iter()
-                        .map(|tile| HitRect {
-                            index: tile.index,
-                            x: tile.x,
-                            y: tile.y,
-                            width: tile.width,
-                            height: tile.height,
-                            depth: tile.depth,
-                        })
-                        .collect::<Vec<_>>();
-                    if let Some(index) = hit_test(&hits, x, y) {
+                MouseButton::Left | MouseButton::Right => {
+                    let target = pointer_hit(&this.map_tiles.borrow(), this.transform, (x, y));
+                    this.pointer_tile = target;
+                    this.keyboard_target = false;
+                    if let Some(index) = target {
+                        let focus_changed = this.focused_tile != Some(index);
                         this.focused_tile = Some(index);
+                        if event.button == MouseButton::Right {
+                            if focus_changed {
+                                this.dispatch(Command::MapFocus(index), cx);
+                            }
+                            if let Some(path) = this.runtime.map_path(index) {
+                                this.dispatch(Command::Open(path), cx);
+                            }
+                            cx.notify();
+                            return;
+                        }
                         this.dispatch(
                             if event.modifiers.control {
                                 Command::MapMark(index)
@@ -155,20 +254,26 @@ pub fn canvas_view(
                         );
                     }
                 }
-                _ => {}
             }
         }))
         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+            if this.sidebar_drag {
+                return;
+            }
+            let bounds = this.map_bounds.get();
+            let x = (event.position.x - bounds.origin.x).as_f32();
+            let y = (event.position.y - bounds.origin.y).as_f32();
             if event.pressed_button != Some(MouseButton::Middle) {
                 this.map_drag = None;
+                let target = pointer_hit(&this.map_tiles.borrow(), this.transform, (x, y));
+                update_pointer(this, target, cx);
                 return;
             }
             if let Some((old_x, old_y)) = this.map_drag {
-                let bounds = this.map_bounds.get();
-                let x = (event.position.x - bounds.origin.x).as_f32();
-                let y = (event.position.y - bounds.origin.y).as_f32();
                 this.transform.pan(x - old_x, y - old_y);
                 this.map_drag = Some((x, y));
+                let target = pointer_hit(&this.map_tiles.borrow(), this.transform, (x, y));
+                update_pointer(this, target, cx);
                 cx.notify();
             }
         }))
@@ -184,25 +289,40 @@ pub fn canvas_view(
                 ScrollDelta::Lines(delta) => delta.y,
                 ScrollDelta::Pixels(delta) => delta.y.as_f32() / 24.,
             };
-            if lines.abs() < f32::EPSILON {
-                return;
-            }
-            if event.modifiers.shift {
-                this.transform.pan(0., lines * 30.);
-                cx.notify();
-                return;
-            }
             let bounds = this.map_bounds.get();
             let x = (event.position.x - bounds.origin.x).as_f32();
             let y = (event.position.y - bounds.origin.y).as_f32();
-            this.transform.zoom_at(
-                x,
-                y,
-                this.transform.scale * if lines > 0. { 1.15 } else { 1. / 1.15 },
+            let tiles: Vec<_> = this
+                .map_tiles
+                .borrow()
+                .iter()
+                .map(|tile| (hit_rect(tile), tile.directory))
+                .collect();
+            let action = wheel_action(
+                this.transform,
+                lines,
+                event.modifiers.shift,
+                (bounds.size.width.as_f32(), bounds.size.height.as_f32()),
+                (x, y),
+                &tiles,
             );
-            this.dispatch(Command::MapZoom(this.transform.scale), cx);
+            match action {
+                WheelAction::Ignore => {}
+                WheelAction::Pan { dy } => {
+                    this.transform.pan(0., dy);
+                    cx.notify();
+                }
+                WheelAction::Zoom { scale } => {
+                    this.transform.zoom_at(x, y, scale);
+                    this.dispatch(Command::MapZoom(this.transform.scale), cx);
+                }
+                WheelAction::Navigate(index) => this.dispatch(Command::MapNavigate(index), cx),
+                WheelAction::Up => this.dispatch(Command::MapUp, cx),
+            }
         }))
-        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.map_key(event, cx)))
+        .on_key_down(
+            cx.listener(|this, event: &KeyDownEvent, window, cx| this.map_key(event, window, cx)),
+        )
         .child(
             canvas(
                 move |bounds, window, _| {
@@ -234,7 +354,7 @@ pub fn canvas_view(
                             {
                                 continue;
                             }
-                            let fill = tile_color(tile);
+                            let fill = tile_color(tile, color_mode);
                             let border = if tile.marked || tile.covered {
                                 gpui_kit::rgb(0xff9f43).into()
                             } else if tile.matched {
@@ -266,7 +386,7 @@ pub fn canvas_view(
                                     BorderStyle::Solid
                                 },
                             ));
-                            if tile.reclaim {
+                            if color_mode == 0 && tile.reclaim {
                                 let width = rect.size.width.as_f32();
                                 let height = rect.size.height.as_f32();
                                 let step = ((width + height) / 96.).max(14.);
@@ -289,7 +409,9 @@ pub fn canvas_view(
                                     window.paint_path(path, palette.text.opacity(0.16));
                                 }
                             }
-                            if rect.size.width > px(55.) && rect.size.height > px(20.) {
+                            if rect.size.width > px(55. * interface_scale)
+                                && rect.size.height > px(20. * interface_scale)
+                            {
                                 let font = Font {
                                     family: "Segoe UI".into(),
                                     weight: if tile.directory {
@@ -308,7 +430,7 @@ pub fn canvas_view(
                                 };
                                 let line = window.text_system().shape_line(
                                     SharedString::from(tile.name.clone()),
-                                    px(11.),
+                                    px(font_size),
                                     &[run],
                                     None,
                                 );
@@ -317,10 +439,10 @@ pub fn canvas_view(
                                     |window| {
                                         let _ = line.paint(
                                             Point::new(
-                                                rect.origin.x + px(5.),
-                                                rect.origin.y + px(3.),
+                                                rect.origin.x + px(5. * interface_scale),
+                                                rect.origin.y + px(3. * interface_scale),
                                             ),
-                                            px(16.),
+                                            px(16. * interface_scale),
                                             TextAlign::Left,
                                             None,
                                             window,
@@ -351,12 +473,235 @@ pub fn category_color(category: u8) -> Hsla {
     })
     .into()
 }
-fn tile_color(tile: &MapTile) -> Hsla {
-    category_color(tile.category).opacity((1. - tile.depth.min(6) as f32 * 0.045).max(0.65))
+pub fn age_color(age: u8) -> Hsla {
+    gpui_kit::rgb(age_rgb(age)).into()
+}
+fn tile_color(tile: &MapTile, mode: u8) -> Hsla {
+    let color = if mode == 1 {
+        age_color(tile.age)
+    } else {
+        category_color(tile.category)
+    };
+    color.opacity((1. - tile.depth.min(6) as f32 * 0.045).max(0.65))
+}
+
+fn hit_rect(tile: &MapTile) -> HitRect {
+    HitRect {
+        index: tile.index,
+        x: tile.x,
+        y: tile.y,
+        width: tile.width,
+        height: tile.height,
+        depth: tile.depth,
+    }
+}
+
+fn pointer_hit(tiles: &[MapTile], transform: ViewTransform, pointer: (f32, f32)) -> Option<usize> {
+    let hits: Vec<_> = tiles.iter().map(hit_rect).collect();
+    let (x, y) = transform.base(pointer.0, pointer.1);
+    hit_test(&hits, x, y)
+}
+fn update_pointer(app: &mut App, target: Option<usize>, cx: &mut Context<App>) {
+    let changed = app.pointer_tile != target || app.keyboard_target;
+    app.pointer_tile = target;
+    app.keyboard_target = false;
+    if let Some(index) = target.filter(|target| app.focused_tile != Some(*target)) {
+        app.focused_tile = Some(index);
+        app.dispatch(Command::MapFocus(index), cx);
+    } else if changed {
+        cx.notify();
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wheel_rect(index: usize, x: f32, y: f32, width: f32, height: f32, depth: u32) -> HitRect {
+        HitRect {
+            index,
+            x,
+            y,
+            width,
+            height,
+            depth,
+        }
+    }
+
+    #[test]
+    fn pure_age_palette_separates_recent_old_and_unknown_metadata() {
+        assert_eq!(age_rgb(0), 0x697784);
+        assert_eq!(age_rgb(1), 0x397c70);
+        assert_eq!(age_rgb(2), 0x487caf);
+        assert_eq!(age_rgb(3), 0x8a8545);
+        assert_eq!(age_rgb(4), 0xac733e);
+        assert_eq!(age_rgb(5), 0x8f4b62);
+        assert_eq!(age_rgb(u8::MAX), 0x697784);
+        assert_eq!(label_font_size(75), 8.25);
+        assert_eq!(label_font_size(150), 16.5);
+    }
+
+    #[test]
+    fn wheel_enters_only_after_a_directory_already_covers_the_canvas() {
+        let directory = wheel_rect(7, 250., 250., 500., 500., 0);
+        let tiles = [(directory, true)];
+        assert_eq!(
+            wheel_action(
+                ViewTransform::default(),
+                1.,
+                false,
+                (1000., 1000.),
+                (500., 500.),
+                &tiles
+            ),
+            WheelAction::Zoom { scale: 1.15 }
+        );
+        let mut transform = ViewTransform::default();
+        transform.zoom_at(500., 500., 2.);
+        assert_eq!(
+            wheel_action(transform, 1., false, (1000., 1000.), (500., 500.), &tiles),
+            WheelAction::Navigate(7)
+        );
+        let shifted = ViewTransform {
+            scale: 2.,
+            x: 0.,
+            y: 0.,
+        };
+        assert_eq!(
+            wheel_action(shifted, 1., false, (1000., 1000.), (500., 500.), &tiles),
+            WheelAction::Zoom { scale: 2.3 }
+        );
+    }
+
+    #[test]
+    fn wheel_uses_the_deepest_filled_directory_never_a_file() {
+        let tiles = [
+            (wheel_rect(1, 0., 0., 1000., 1000., 0), true),
+            (wheel_rect(2, 0., 0., 1000., 1000., 1), true),
+            (wheel_rect(3, 0., 0., 1000., 1000., 2), false),
+        ];
+        assert_eq!(
+            wheel_action(
+                ViewTransform::default(),
+                1.,
+                false,
+                (1000., 1000.),
+                (500., 500.),
+                &tiles
+            ),
+            WheelAction::Navigate(2)
+        );
+        assert_eq!(
+            wheel_action(
+                ViewTransform::default(),
+                1.,
+                false,
+                (1000., 1000.),
+                (500., 500.),
+                &tiles[2..]
+            ),
+            WheelAction::Zoom { scale: 1.15 }
+        );
+    }
+
+    #[test]
+    fn wheel_out_at_base_goes_up_and_shift_remains_pan() {
+        assert_eq!(
+            wheel_action(
+                ViewTransform::default(),
+                -1.,
+                false,
+                (1000., 1000.),
+                (500., 500.),
+                &[]
+            ),
+            WheelAction::Up
+        );
+        assert_eq!(
+            wheel_action(
+                ViewTransform {
+                    scale: 2.,
+                    x: 0.,
+                    y: 0.
+                },
+                -1.,
+                false,
+                (1000., 1000.),
+                (500., 500.),
+                &[]
+            ),
+            WheelAction::Zoom { scale: 2. / 1.15 }
+        );
+        assert_eq!(
+            wheel_action(
+                ViewTransform::default(),
+                -2.,
+                true,
+                (1000., 1000.),
+                (500., 500.),
+                &[]
+            ),
+            WheelAction::Pan { dy: -60. }
+        );
+    }
+
+    #[test]
+    fn wheel_rejects_nonfinite_or_outside_canvas_events() {
+        for (lines, viewport, pointer) in [
+            (0., (1000., 1000.), (500., 500.)),
+            (f32::NAN, (1000., 1000.), (500., 500.)),
+            (1., (0., 1000.), (500., 500.)),
+            (1., (1000., 1000.), (1000., 500.)),
+            (1., (1000., 1000.), (f32::NAN, 500.)),
+        ] {
+            assert_eq!(
+                wheel_action(
+                    ViewTransform::default(),
+                    lines,
+                    false,
+                    viewport,
+                    pointer,
+                    &[]
+                ),
+                WheelAction::Ignore
+            );
+        }
+    }
+
+    #[test]
+    fn age_mode_uses_distinct_bands_and_category_mode_preserves_categories() {
+        let tile = MapTile {
+            index: 1,
+            name: "data".into(),
+            x: 0.,
+            y: 0.,
+            width: 100.,
+            height: 100.,
+            directory: false,
+            marked: false,
+            covered: false,
+            matched: false,
+            depth: 0,
+            category: 4,
+            reclaim: false,
+            age: 5,
+        };
+        assert_eq!(tile_color(&tile, 0), category_color(4));
+        let expected: Hsla = gpui_kit::rgb(0x8f4b62).into();
+        assert_eq!(tile_color(&tile, 1), expected);
+        for left in 0..6 {
+            for right in left + 1..6 {
+                assert_ne!(age_color(left), age_color(right));
+            }
+        }
+        assert_eq!(age_color(u8::MAX), age_color(0));
+    }
+
+    #[test]
+    fn map_glyphs_follow_interface_scale() {
+        assert_eq!(label_font_size(75), 8.25);
+        assert_eq!(label_font_size(100), 11.);
+        assert_eq!(label_font_size(150), 16.5);
+    }
     #[test]
     fn arrows_choose_the_closest_tile_in_the_requested_direction() {
         let rect = |index, x, y| HitRect {

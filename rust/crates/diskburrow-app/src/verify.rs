@@ -67,7 +67,45 @@ pub fn run(data: PathBuf, root: String, destination: &Path) -> Result<()> {
             .all(|t| t.x.is_finite() && t.y.is_finite() && t.width >= 0. && t.height >= 0.),
         "Invalid map geometry"
     );
-    let report = serde_json::json!({"product_version":env!("CARGO_PKG_VERSION"),"executable":std::env::current_exe()?,"ordinary_user":!crate::helper::is_elevated()?,"scan_root":snapshot.root,"traversal_completed":snapshot.traversal_completed,"directories":snapshot.directories.len(),"largest_files":snapshot.largest_files.len(),"issues":snapshot.issues.len(),"map_tiles":tiles.len(),"reclaim_tiles":tiles.iter().filter(|tile|tile.reclaim).count(),"map_categories":tiles.iter().map(|tile|tile.category).collect::<Vec<_>>(),"appearances":appearances,"snapshot_export":snapshot_path,"verification_scope":"Real executable, ordinary metadata scan, live map geometry, indexed category/reclaim/recommendation projections and export; no GUI clicks, UAC approval, deletion, tray or autostart"});
+    let mut display_projections = vec![];
+    for depth in [1, 3, 6] {
+        runtime.command(Command::Setting(Setting::MapDepth, depth.to_string()));
+        for hidden in [true, false] {
+            runtime.command(Command::Setting(Setting::ShowHidden, hidden.to_string()));
+            let projection = runtime.map_tiles(650., 400.);
+            ensure!(
+                projection.iter().all(|tile| tile.depth <= depth),
+                "Map depth was not bounded"
+            );
+            display_projections.push(serde_json::json!({"depth":depth,"show_hidden":hidden,"tiles":projection.len(),"summary":runtime.view().map_visible_summary}));
+        }
+    }
+    runtime.command(Command::Setting(Setting::ShowHidden, "true".into()));
+    runtime.command(Command::Setting(Setting::MapDepth, "3".into()));
+    runtime.command(Command::MapColor(1));
+    let aged = runtime.map_tiles(650., 400.);
+    ensure!(aged.iter().all(|tile| tile.age <= 5), "Unknown age band");
+    runtime.command(Command::Setting(Setting::Theme, "system".into()));
+    runtime.command(Command::Setting(Setting::UiScale, "150".into()));
+    let display_settings = serde_json::json!({"theme":runtime.view().settings.theme,"system_dark":crate::appearance::system_dark(),"ui_scale_percent":runtime.view().settings.ui_scale_percent,"map_depth":runtime.view().settings.map_depth,"sidebar_width":runtime.view().settings.sidebar_width});
+    let mut selected_count = 0;
+    if let Some(file) = snapshot.largest_files.first() {
+        runtime.command(Command::Mark(file.path.clone()));
+        let selection = runtime.selected_export().expect("Completed index");
+        selected_count = selection.count;
+        ensure!(
+            selected_count == 1 && !selection.prompt.is_empty(),
+            "Selection review export missing"
+        );
+        runtime.command(Command::ExportSelection(
+            destination
+                .with_extension("selected.txt")
+                .to_string_lossy()
+                .into_owned(),
+        ));
+        await_idle(&mut runtime)?;
+    }
+    let report = serde_json::json!({"product_version":env!("CARGO_PKG_VERSION"),"executable":std::env::current_exe()?,"ordinary_user":!crate::helper::is_elevated()?,"scan_root":snapshot.root,"traversal_completed":snapshot.traversal_completed,"directories":snapshot.directories.len(),"largest_files":snapshot.largest_files.len(),"issues":snapshot.issues.len(),"map_tiles":tiles.len(),"reclaim_tiles":tiles.iter().filter(|tile|tile.reclaim).count(),"map_categories":tiles.iter().map(|tile|tile.category).collect::<Vec<_>>(),"appearances":appearances,"display_projections":display_projections,"display_settings":display_settings,"age_bands":aged.iter().map(|tile|tile.age).collect::<Vec<_>>(),"selected_count":selected_count,"snapshot_export":snapshot_path,"verification_scope":"Real executable, ordinary metadata scan, live map geometry, indexed category/reclaim/recommendation/age/depth/hidden projections, system display settings and selected TXT export; no GUI clicks, UAC approval, deletion, tray or autostart"});
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

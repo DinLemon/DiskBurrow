@@ -11,7 +11,7 @@ $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 $target = [IO.Path]::GetFullPath($TargetDirectory)
 if (Test-Path -LiteralPath $output) { throw 'Use a new output directory; existing artifacts are never replaced.' }
-$version = '0.3.0-alpha.4'
+$version = '0.3.0-alpha.5'
 $oldFlags = $env:RUSTFLAGS
 $oldTarget = $env:CARGO_TARGET_DIR
 try {

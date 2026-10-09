@@ -1,3 +1,4 @@
+use crate::display::MapProjection;
 use anyhow::{Result, ensure};
 use chrono::{DateTime, Utc};
 use diskburrow_services::{
@@ -51,6 +52,51 @@ pub struct SearchResults {
     pub total: usize,
 }
 impl LiveIndex {
+    /// Include an entry only when its entire indexed ancestry is visible.
+    pub fn visible(&self, index: usize, show_hidden: bool) -> bool {
+        if index >= self.entries.len() {
+            return false;
+        }
+        if show_hidden {
+            return true;
+        }
+        let mut current = index;
+        loop {
+            let entry = &self.entries[current];
+            if entry_hidden(entry) {
+                return false;
+            }
+            if current == 0 {
+                return !self.root_hidden();
+            }
+            let Some(parent) = entry.parent.filter(|parent| *parent < current) else {
+                return false;
+            };
+            current = parent;
+        }
+    }
+    fn root_hidden(&self) -> bool {
+        // The indexed root has an empty name; retain dot ancestry from its absolute path.
+        self.root
+            .split(['\\', '/'])
+            .any(|name| name.starts_with('.'))
+    }
+    fn visibility(&self, show_hidden: bool) -> Vec<bool> {
+        let mut visible = vec![show_hidden; self.entries.len()];
+        if !show_hidden {
+            for (i, entry) in self.entries.iter().enumerate() {
+                visible[i] = !entry_hidden(entry)
+                    && if i == 0 {
+                        !self.root_hidden()
+                    } else {
+                        entry
+                            .parent
+                            .is_some_and(|parent| parent < i && visible[parent])
+                    };
+            }
+        }
+        visible
+    }
     pub fn from_tree(root: String, tree: Node) -> Result<Self> {
         Self::from_tree_with_limits(root, tree, MAXIMUM_ENTRIES, MAXIMUM_RESIDENT_BYTES)
     }
@@ -258,17 +304,36 @@ impl LiveIndex {
         }
     }
     pub fn search(&self, scope: usize, query: &str, global: bool, limit: usize) -> SearchResults {
+        self.search_with_projection(scope, query, global, limit, MapProjection::default())
+    }
+    pub fn search_with_projection(
+        &self,
+        scope: usize,
+        query: &str,
+        global: bool,
+        limit: usize,
+        projection: MapProjection,
+    ) -> SearchResults {
         if scope >= self.entries.len() {
             return SearchResults::default();
         }
         if query.is_empty() {
-            let mut indices = self.entries[scope].children.clone();
+            if !self.visible(scope, projection.show_hidden) {
+                return SearchResults::default();
+            }
+            let mut indices: Vec<_> = self.entries[scope]
+                .children
+                .iter()
+                .copied()
+                .filter(|index| projection.show_hidden || !entry_hidden(&self.entries[*index]))
+                .collect();
             indices.sort_by_key(|i| (std::cmp::Reverse(self.entries[*i].logical), *i));
             let total = indices.len();
             indices.truncate(limit.min(1000));
             return SearchResults { indices, total };
         }
-        let found = self.matches(scope, query, global);
+        let visible = self.visibility(projection.show_hidden);
+        let found = self.matches(scope, query, global, &visible);
         let mut result = SearchResults::default();
         for (index, matched) in found.into_iter().enumerate() {
             if matched {
@@ -280,14 +345,14 @@ impl LiveIndex {
         }
         result
     }
-    fn matches(&self, scope: usize, query: &str, global: bool) -> Vec<bool> {
+    fn matches(&self, scope: usize, query: &str, global: bool, visible: &[bool]) -> Vec<bool> {
         let mut in_scope = vec![false; self.entries.len()];
         let mut matches = vec![false; self.entries.len()];
         let query = query.replace('/', "\\").to_lowercase();
         let by_path = query.contains('\\');
         for (i, entry) in self.entries.iter().enumerate() {
             in_scope[i] = global || i == scope || entry.parent.is_some_and(|p| in_scope[p]);
-            if !in_scope[i] || query.is_empty() {
+            if !in_scope[i] || !visible[i] || query.is_empty() {
                 continue;
             }
             matches[i] = if by_path {
@@ -306,18 +371,37 @@ impl LiveIndex {
         isolate: bool,
         global: bool,
     ) -> Vec<i64> {
+        self.projected_weights_with_projection(
+            scope,
+            metric,
+            query,
+            isolate,
+            global,
+            MapProjection::default(),
+        )
+    }
+    pub fn projected_weights_with_projection(
+        &self,
+        scope: usize,
+        metric: MapMetric,
+        query: &str,
+        isolate: bool,
+        global: bool,
+        projection: MapProjection,
+    ) -> Vec<i64> {
         let count = self.entries.len();
         let mut weights = vec![0_i64; count];
         if scope >= count {
             return weights;
         }
-        let mut keep = vec![!isolate || query.is_empty(); count];
+        let mut keep = self.visibility(projection.show_hidden);
         if isolate && !query.is_empty() {
-            let found = self.matches(scope, query, global);
+            let found = self.matches(scope, query, global, &keep);
             let mut whole = vec![false; count];
             for (i, entry) in self.entries.iter().enumerate() {
-                whole[i] = (found[i] && entry.directory) || entry.parent.is_some_and(|p| whole[p]);
-                keep[i] = found[i] || whole[i];
+                whole[i] = keep[i]
+                    && ((found[i] && entry.directory) || entry.parent.is_some_and(|p| whole[p]));
+                keep[i] = keep[i] && (found[i] || whole[i]);
             }
             for i in (1..count).rev() {
                 if keep[i] {
@@ -349,8 +433,31 @@ impl LiveIndex {
         isolate: bool,
         global: bool,
     ) -> Vec<IndexTile> {
+        self.layout_with_projection(
+            rootindex,
+            bounds,
+            metric,
+            query,
+            isolate,
+            global,
+            MapProjection::default(),
+        )
+    }
+    /// Draw 1..6 levels with hidden subtrees removed before sizing or isolation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_with_projection(
+        &self,
+        rootindex: usize,
+        bounds: (f32, f32),
+        metric: MapMetric,
+        query: &str,
+        isolate: bool,
+        global: bool,
+        projection: MapProjection,
+    ) -> Vec<IndexTile> {
         let (w, h) = bounds;
         if rootindex >= self.entries.len()
+            || !self.visible(rootindex, projection.show_hidden)
             || !self.entries[rootindex].directory
             || !w.is_finite()
             || !h.is_finite()
@@ -359,9 +466,18 @@ impl LiveIndex {
         {
             return vec![];
         }
-        let weights = self.projected_weights(rootindex, metric, query, isolate, global);
+        let weights = self.projected_weights_with_projection(
+            rootindex, metric, query, isolate, global, projection,
+        );
         let mut result = vec![];
-        self.fill(rootindex, (0.0, 0.0, w, h), 0, &weights, &mut result);
+        self.fill(
+            rootindex,
+            (0.0, 0.0, w, h),
+            0,
+            projection.depth.clamp(1, 6),
+            &weights,
+            &mut result,
+        );
         result
     }
     fn fill(
@@ -369,6 +485,7 @@ impl LiveIndex {
         parent: usize,
         bounds: (f32, f32, f32, f32),
         depth: u32,
+        levels: u32,
         weights: &[i64],
         out: &mut Vec<IndexTile>,
     ) {
@@ -397,7 +514,7 @@ impl LiveIndex {
             let child = tile.index;
             let subdivide = child != OTHERS_INDEX
                 && self.entries[child].directory
-                && depth < 2
+                && depth + 1 < levels
                 && tile.width > 65.0
                 && tile.height > 55.0;
             let inner = (
@@ -408,7 +525,7 @@ impl LiveIndex {
             );
             out.push(tile);
             if subdivide {
-                self.fill(child, inner, depth + 1, weights, out);
+                self.fill(child, inner, depth + 1, levels, weights, out);
             }
         }
     }
@@ -503,6 +620,9 @@ impl LiveIndex {
 }
 const CLOUD_ATTRIBUTES: u32 = 0x1000 | 0x40000 | 0x400000;
 const UNSAFE_ATTRIBUTES: u32 = CLOUD_ATTRIBUTES | 0x400;
+fn entry_hidden(entry: &LiveEntry) -> bool {
+    entry.name.starts_with('.') || entry.attributes & (0x2 | 0x4) != 0
+}
 pub(crate) fn entry_reserve(name_bytes: usize) -> usize {
     2 * std::mem::size_of::<LiveEntry>() + 64 + 2 * name_bytes
 }

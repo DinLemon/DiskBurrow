@@ -9,12 +9,13 @@ use crate::{
 use anyhow::{Result, bail, ensure};
 use chrono::{DateTime, Local, Utc};
 use diskburrow_engine::{
-    EntryClassification, LiveIndex, MapMetric, MapNavigation, OTHERS_INDEX, Recommendation,
+    AgeBand, EntryClassification, LiveIndex, MapMetric, MapNavigation, MapProjection, OTHERS_INDEX,
+    Recommendation,
 };
 use diskburrow_services::*;
 use diskburrow_windows::{
     Cancellation, CleanupPlan, CleanupService, ManualDeletePlan, ManualReclaimProjection,
-    RuleEnvironment, WindowsRuleEnvironment, is_within, normalize_local_path,
+    RuleEnvironment, WindowsRuleEnvironment, equals_path, is_within, normalize_local_path,
     project_manual_reclaim,
 };
 use disktree_core::scan::{ScanHandle, ScanOptions, ScanProgress as CoreProgress};
@@ -58,6 +59,9 @@ enum Work {
         snapshot: Arc<ScanSnapshot>,
         history: Vec<ScanSnapshot>,
         history_error: Option<String>,
+        cache: Option<crate::scan_cache::ScanCache>,
+        reused: bool,
+        focus_path: Option<String>,
         analysis: Analysis,
     },
     CleanupPreview(CleanupPlan),
@@ -98,6 +102,7 @@ pub struct Runtime {
     tx: Sender<Event>,
     rx: Receiver<Event>,
     live: Option<Arc<LiveIndex>>,
+    scan_cache: Option<crate::scan_cache::ScanCache>,
     analysis: Analysis,
     git_generation: u64,
     git_job: Option<GitJob>,
@@ -185,12 +190,16 @@ impl Runtime {
             selected_count: 0,
             map_path: String::new(),
             map_breadcrumbs: vec![],
+            map_parents: vec![],
+            map_visible_summary: String::new(),
+            scan_reuse_notice: String::new(),
             map_objects: vec![],
             map_matches: 0,
             map_query: String::new(),
             map_global: false,
             map_isolate: false,
             map_metric: 0,
+            map_color: 0,
             map_zoom: 1.0,
             map_has_data: false,
             focused_path: String::new(),
@@ -209,6 +218,7 @@ impl Runtime {
             tx,
             rx,
             live: None,
+            scan_cache: None,
             analysis: Analysis::default(),
             git_generation: 0,
             git_job: None,
@@ -547,8 +557,33 @@ impl Runtime {
             Command::ConfirmCleanup => self.execute(true),
             Command::SelectHistory(id) => self.history_selection = Uuid::parse_str(&id).ok(),
             Command::Export(destination) => self.export(destination),
+            Command::ExportSelection(destination) => self.export_selection(destination),
+            Command::ClearMarks => {
+                self.marks.clear();
+                self.invalidate_review();
+                self.map_changed();
+            }
+            Command::MapColor(color) => {
+                if color <= 1 {
+                    self.view.map_color = color;
+                    self.map_changed();
+                }
+            }
+            Command::MapWiden(root) => {
+                if let Some(live) = &self.live
+                    && let Some(root) = normalize_local_path(&root)
+                    && !equals_path(&root, &live.root)
+                    && is_within(&live.root, &root)
+                    && !self.view.busy
+                {
+                    let focus = live.root.clone();
+                    self.start_scan_root(false, root, Some(focus));
+                }
+            }
             Command::MapNavigate(index) => {
-                if let Some(live) = &self.live {
+                if let Some(live) = &self.live
+                    && live.visible(index, self.view.settings.show_hidden)
+                {
                     self.nav.navigate(live, index);
                 }
                 self.select_git();
@@ -556,11 +591,13 @@ impl Runtime {
             }
             Command::MapBack => {
                 self.nav.back();
+                self.ensure_visible_navigation();
                 self.select_git();
                 self.map_changed();
             }
             Command::MapForward => {
                 self.nav.forward();
+                self.ensure_visible_navigation();
                 self.select_git();
                 self.map_changed();
             }
@@ -579,7 +616,9 @@ impl Runtime {
                 self.map_changed();
             }
             Command::MapFocus(index) => {
-                if let Some(live) = &self.live {
+                if let Some(live) = &self.live
+                    && live.visible(index, self.view.settings.show_hidden)
+                {
                     self.nav.focus(live, index);
                 }
                 self.select_git();
@@ -639,6 +678,10 @@ impl Runtime {
             Setting::GrowthGb => "growth",
             Setting::Language => "language",
             Setting::Theme => "theme",
+            Setting::UiScale => "ui-scale",
+            Setting::MapDepth => "map-depth",
+            Setting::ShowHidden => "show-hidden",
+            Setting::SidebarWidth => "sidebar-width",
             Setting::Battery => "battery",
             Setting::Autostart => "autostart",
             Setting::Exclusions => "exclusions",
@@ -666,15 +709,43 @@ impl Runtime {
                         "Unsupported language"
                     );
                     self.view.settings.language = value;
+                    if !self.view.scan_reuse_notice.is_empty() {
+                        self.view.scan_reuse_notice = self.label("Map.Cached");
+                    }
                     self.map_changed();
                     self.view.status = self.label(&self.status_key);
                 }
                 Setting::Theme => {
                     ensure!(
-                        ["light", "dark"].contains(&value.as_str()),
+                        ["light", "dark", "system"].contains(&value.as_str()),
                         "Unsupported theme"
                     );
                     self.view.settings.theme = value;
+                }
+                Setting::UiScale => {
+                    let n = value.parse::<u16>()?;
+                    ensure!(
+                        [75, 90, 100, 110, 125, 150].contains(&n),
+                        "Unsupported UI scale"
+                    );
+                    self.view.settings.ui_scale_percent = n;
+                }
+                Setting::MapDepth => {
+                    let n = value.parse::<u8>()?;
+                    ensure!((1..=6).contains(&n), "Unsupported map depth");
+                    self.view.settings.map_depth = n;
+                    self.map_changed();
+                }
+                Setting::ShowHidden => {
+                    self.view.settings.show_hidden = value.parse::<bool>()?;
+                    self.ensure_visible_navigation();
+                    self.select_git();
+                    self.map_changed();
+                }
+                Setting::SidebarWidth => {
+                    let n = value.parse::<u16>()?;
+                    ensure!((180..=420).contains(&n), "Unsupported sidebar width");
+                    self.view.settings.sidebar_width = n;
                 }
                 Setting::Battery => self.view.settings.allow_on_battery = value.parse::<bool>()?,
                 Setting::Autostart => self.view.settings.autostart = value.parse::<bool>()?,
@@ -767,6 +838,14 @@ impl Runtime {
             self.error(self.label("FastScan.Hint"));
             return;
         }
+        self.start_scan_root(fast, root, None);
+    }
+    fn start_scan_root(&mut self, fast: bool, root: String, focus_path: Option<String>) {
+        let cache = if focus_path.is_some() {
+            self.scan_cache.clone()
+        } else {
+            None
+        };
         self.invalidate_review();
         self.clear_git();
         let started = Utc::now();
@@ -783,12 +862,25 @@ impl Runtime {
                     "Only a confirmed local directory can be scanned"
                 );
                 ensure!(!cancel.is_cancelled(), "Cancelled");
+                let mut next_cache = None;
+                let mut reused = false;
                 let index = if fast {
                     let progress = Arc::new(CoreProgress::default());
                     let _ = tx.send(Event::Progress(token, progress.clone()));
                     crate::helper::scan(&root, cancel.clone(), progress)?
                 } else {
-                    let handle = ScanHandle::spawn(PathBuf::from(&root), ScanOptions::default());
+                    let before = crate::scan_cache::observe(&root);
+                    let known = cache.as_ref().and_then(|cache| cache.known_for(&root));
+                    reused = known.is_some();
+                    let mut options = ScanOptions::default();
+                    if reused && let Some(cache) = &cache {
+                        options.maximum_entries =
+                            options.maximum_entries.saturating_sub(cache.entries);
+                        options.maximum_resident_bytes = options
+                            .maximum_resident_bytes
+                            .saturating_sub(cache.reserved_bytes * 2);
+                    }
+                    let handle = ScanHandle::spawn_with(PathBuf::from(&root), options, known);
                     let _ = tx.send(Event::Progress(token, handle.progress.clone()));
                     let tree = loop {
                         if cancel.is_cancelled() {
@@ -800,6 +892,13 @@ impl Runtime {
                         thread::sleep(Duration::from_millis(60));
                     };
                     ensure!(!cancel.is_cancelled(), "Cancelled");
+                    if reused {
+                        ensure!(
+                            cache.as_ref().is_some_and(|cache| cache.still_valid()),
+                            "Cached directory changed during traversal; previous results retained"
+                        );
+                    }
+                    next_cache = crate::scan_cache::ScanCache::capture(&root, &tree, before);
                     LiveIndex::from_tree(root, tree)?
                 };
                 ensure!(!cancel.is_cancelled(), "Cancelled");
@@ -819,6 +918,9 @@ impl Runtime {
                     snapshot,
                     history,
                     history_error,
+                    cache: next_cache,
+                    reused,
+                    focus_path,
                     analysis,
                 })
             },
@@ -936,6 +1038,7 @@ impl Runtime {
         });
     }
     fn execute(&mut self, cleanup: bool) {
+        self.scan_cache = None;
         if self.view.busy {
             return;
         }
@@ -995,6 +1098,167 @@ impl Runtime {
             }
             result
         });
+    }
+    pub fn selected_export(&self) -> Option<crate::selection_export::SelectedExport> {
+        self.live.as_ref().map(|live| {
+            crate::selection_export::render_selected(
+                live,
+                &self.marks,
+                &self.view.settings.language,
+            )
+        })
+    }
+    fn export_selection(&mut self, destination: String) {
+        let Some(export) = self.selected_export().filter(|export| export.count > 0) else {
+            return;
+        };
+        if !std::path::Path::new(&destination).is_absolute() {
+            self.error("An absolute list destination is required");
+            return;
+        }
+        self.spawn(Purpose::Export, "Status.Exporting", move |cancel, _, _| {
+            let destination = PathBuf::from(destination);
+            let parent = destination
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("A list destination directory is required"))?;
+            let temporary = parent.join(format!(".diskburrow-selection-{}.tmp", Uuid::new_v4()));
+            let result = (|| {
+                ensure!(!cancel.is_cancelled(), "Cancelled");
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temporary)?;
+                file.write_all(export.list.as_bytes())?;
+                file.flush()?;
+                file.sync_all()?;
+                drop(file);
+                ensure!(!cancel.is_cancelled(), "Cancelled");
+                // Atomic non-overwriting publication; failure cleanup never removes the user destination.
+                use std::os::windows::ffi::OsStrExt as _;
+                let source = temporary
+                    .as_os_str()
+                    .encode_wide()
+                    .chain(Some(0))
+                    .collect::<Vec<_>>();
+                let target = destination
+                    .as_os_str()
+                    .encode_wide()
+                    .chain(Some(0))
+                    .collect::<Vec<_>>();
+                ensure!(
+                    !source[..source.len() - 1].contains(&0)
+                        && !target[..target.len() - 1].contains(&0),
+                    "Invalid list path"
+                );
+                // No REPLACE_EXISTING or COPY_ALLOWED: publish within the same directory,
+                // including filesystems without hardlinks, and preserve any existing target.
+                let moved = unsafe {
+                    windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+                        source.as_ptr(),
+                        target.as_ptr(),
+                        windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH,
+                    )
+                };
+                if moved == 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                Ok(Work::Exported)
+            })();
+            if temporary.exists() {
+                let _ = fs::remove_file(&temporary);
+            }
+            result
+        });
+    }
+    fn projection(&self) -> MapProjection {
+        MapProjection {
+            depth: self.view.settings.map_depth as u32,
+            show_hidden: self.view.settings.show_hidden,
+        }
+    }
+    fn find_map_path(live: &LiveIndex, path: &str) -> Option<usize> {
+        if equals_path(&live.root, path) {
+            return Some(0);
+        }
+        if !is_within(path, &live.root) {
+            return None;
+        }
+        let root = live.root.trim_end_matches('\\');
+        let suffix = path.get(root.len()..)?.trim_start_matches('\\');
+        let mut current = 0;
+        for name in suffix.split('\\') {
+            current = *live.entries[current]
+                .children
+                .iter()
+                .find(|i| live.entries[**i].name.eq_ignore_ascii_case(name))?;
+        }
+        Some(current)
+    }
+    pub fn map_path(&self, index: usize) -> Option<String> {
+        self.live
+            .as_ref()
+            .filter(|live| index < live.entries.len())
+            .map(|live| live.path(index))
+    }
+    pub fn siblings(&self, target: usize) -> Vec<Row> {
+        let Some(live) = &self.live else {
+            return vec![];
+        };
+        let Some(parent) = live.entries.get(target).and_then(|entry| entry.parent) else {
+            return vec![];
+        };
+        let metric = self.view.map_metric;
+        let projected = (!self.view.settings.show_hidden).then(|| {
+            live.projected_weights_with_projection(
+                parent,
+                match metric {
+                    1 => MapMetric::Logical,
+                    2 => MapMetric::Files,
+                    _ => MapMetric::Allocated,
+                },
+                "",
+                false,
+                false,
+                self.projection(),
+            )
+        });
+        let weight = |i: usize| {
+            projected.as_ref().map_or_else(
+                || match metric {
+                    1 => live.entries[i].logical,
+                    2 => live.entries[i].files,
+                    _ => live.entries[i].allocated.unwrap_or(0),
+                },
+                |weights| weights[i],
+            )
+        };
+        let mut siblings = live.entries[parent]
+            .children
+            .iter()
+            .copied()
+            .filter(|i| live.visible(*i, self.view.settings.show_hidden))
+            .collect::<Vec<_>>();
+        siblings.sort_by_key(|i| (std::cmp::Reverse(weight(*i)), *i));
+        let total = weight(parent).max(1) as f64;
+        siblings
+            .into_iter()
+            .take(ROW_LIMIT)
+            .map(|i| Row {
+                key: i.to_string(),
+                path: live.path(i),
+                selected: false,
+                selectable: false,
+                cells: vec![format!(
+                    "{:.1}% · {}",
+                    100. * weight(i) as f64 / total,
+                    if metric == 2 {
+                        weight(i).to_string()
+                    } else {
+                        gb(weight(i), &self.view.settings.language)
+                    }
+                )],
+            })
+            .collect()
     }
     fn refresh_history(&mut self) {
         let data = self.data_dir.clone();
@@ -1204,6 +1468,9 @@ impl Runtime {
                 snapshot,
                 history,
                 history_error,
+                cache,
+                reused,
+                focus_path,
                 analysis,
             } => {
                 let previous = history.first().cloned();
@@ -1211,11 +1478,25 @@ impl Runtime {
                 self.history_selection = None;
                 self.view.root = snapshot.root.clone();
                 self.live = Some(index);
+                self.scan_cache = cache;
+                self.view.scan_reuse_notice = if reused {
+                    self.label("Map.Cached")
+                } else {
+                    String::new()
+                };
                 self.analysis = analysis;
                 self.clear_git();
                 self.snapshot = Some(snapshot.clone());
                 self.nav = MapNavigation::new();
-                self.marks.clear();
+                if let Some(path) = focus_path {
+                    if let Some(live) = &self.live
+                        && let Some(target) = Self::find_map_path(live, &path)
+                    {
+                        self.nav.navigate(live, target);
+                    }
+                } else {
+                    self.marks.clear();
+                }
                 self.map_changed();
                 self.scheduler.record_completed(&snapshot, Utc::now());
                 self.status("Status.Ready");
@@ -1486,7 +1767,11 @@ impl Runtime {
                 })
                 .collect();
             self.view.issue_rows.sort_by(|a, b| a.path.cmp(&b.path));
-            let mut dirs: Vec<_> = snapshot.directories.iter().collect();
+            let mut dirs: Vec<_> = snapshot
+                .directories
+                .iter()
+                .filter(|d| self.visible_path(&d.path))
+                .collect();
             dirs.sort_by_key(|d| std::cmp::Reverse(d.logical_bytes));
             self.view.folders = dirs
                 .into_iter()
@@ -1507,6 +1792,7 @@ impl Runtime {
             self.view.files = snapshot
                 .largest_files
                 .iter()
+                .filter(|f| self.visible_path(&f.path))
                 .map(|f| Row {
                     key: f.path.clone(),
                     path: f.path.clone(),
@@ -1693,6 +1979,37 @@ impl Runtime {
             })
             .unwrap_or_default();
     }
+    fn ensure_visible_navigation(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        if !live.visible(self.nav.current, self.view.settings.show_hidden) {
+            let mut target = self.nav.current;
+            while !live.visible(target, self.view.settings.show_hidden) {
+                let Some(parent) = live.entries[target].parent else {
+                    break;
+                };
+                target = parent;
+            }
+            self.nav = MapNavigation::new();
+            self.nav.navigate(live, target);
+        }
+        if self
+            .nav
+            .focused
+            .is_some_and(|i| !live.visible(i, self.view.settings.show_hidden))
+        {
+            self.nav.focused = live
+                .visible(self.nav.current, self.view.settings.show_hidden)
+                .then_some(self.nav.current);
+        }
+    }
+    fn visible_path(&self, path: &str) -> bool {
+        self.view.settings.show_hidden
+            || self.live.as_ref().is_some_and(|live| {
+                Self::find_map_path(live, path).is_some_and(|i| live.visible(i, false))
+            })
+    }
     fn rebuild_map(&mut self) {
         let Some(index) = &self.live else {
             return;
@@ -1713,11 +2030,72 @@ impl Runtime {
             at = index.entries[i].parent;
         }
         self.view.map_breadcrumbs.reverse();
-        let matches = index.search(
+        self.view.map_parents = std::path::Path::new(&index.root)
+            .ancestors()
+            .skip(1)
+            .take(64)
+            .filter_map(|path| {
+                normalize_local_path(&path.to_string_lossy()).map(|p| (p.clone(), p))
+            })
+            .collect();
+        self.view.map_parents.reverse();
+        let weights = index.projected_weights_with_projection(
+            self.nav.current,
+            match self.view.map_metric {
+                1 => MapMetric::Logical,
+                2 => MapMetric::Files,
+                _ => MapMetric::Allocated,
+            },
+            &self.view.map_query,
+            self.view.map_isolate,
+            self.view.map_global,
+            self.projection(),
+        );
+        let full = match self.view.map_metric {
+            1 => index.entries[0].logical,
+            2 => index.entries[0].files,
+            _ => index.entries[0].allocated.unwrap_or(0),
+        };
+        let metric_key = match self.view.map_metric {
+            1 => "Map.Metric.Logical",
+            2 => "Map.Metric.Files",
+            _ => "Map.Metric.Allocated",
+        };
+        let amount = |n: i64| {
+            if self.view.map_metric == 2 {
+                n.to_string()
+            } else {
+                gb(n, &self.view.settings.language)
+            }
+        };
+        self.view.map_visible_summary = format!(
+            "{} ({}): {} · {}: {}",
+            self.label("Map.Visible"),
+            self.label(metric_key),
+            amount(weights[self.nav.current]),
+            self.label("Map.FullScan"),
+            if self.view.map_metric == 0 && index.entries[0].allocated.is_none() {
+                self.label("Unknown")
+            } else {
+                amount(full)
+            }
+        );
+        let logical_weights = (self.view.map_metric != 1).then(|| {
+            index.projected_weights_with_projection(
+                self.nav.current,
+                MapMetric::Logical,
+                &self.view.map_query,
+                self.view.map_isolate,
+                self.view.map_global,
+                self.projection(),
+            )
+        });
+        let matches = index.search_with_projection(
             self.nav.current,
             &self.view.map_query,
             self.view.map_global,
             1000,
+            self.projection(),
         );
         self.view.map_matches = matches.total;
         self.view.map_objects = matches
@@ -1732,7 +2110,12 @@ impl Runtime {
                     selected: self.marked(&path),
                     selectable: i != 0 && e.attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) == 0,
                     cells: vec![
-                        gb(e.logical, &self.view.settings.language),
+                        gb(
+                            logical_weights
+                                .as_ref()
+                                .map_or(weights[i], |logical| logical[i]),
+                            &self.view.settings.language,
+                        ),
                         e.allocated.map_or_else(
                             || self.label("Unknown"),
                             |n| gb(n, &self.view.settings.language),
@@ -1766,6 +2149,17 @@ impl Runtime {
                 self.label("Manual.Files"),
                 self.label(if entry.coverage { "Yes" } else { "No" })
             );
+            let whole = index.entries[0].logical.max(1) as f64;
+            self.view.focused_summary.push_str(&format!(
+                " · {:.1}% · {}",
+                100. * entry.logical as f64 / whole,
+                DateTime::from_timestamp(entry.modified, 0)
+                    .filter(|_| entry.modified > 0)
+                    .map_or_else(
+                        || self.label("Unknown"),
+                        |date| time(date, &self.view.settings.language)
+                    )
+            ));
             if let Some(class) = self.analysis.classifications.get(focused) {
                 self.view.focused_summary.push_str(&format!(
                     " · {}",
@@ -1810,13 +2204,14 @@ impl Runtime {
         };
         let query = self.view.map_query.to_lowercase();
         let tiles = index
-            .layout(
+            .layout_with_projection(
                 self.nav.current,
                 (width, height),
                 metric,
                 &query,
                 self.view.map_isolate,
                 self.view.map_global,
+                self.projection(),
             )
             .into_iter()
             .map(|tile| {
@@ -1835,6 +2230,7 @@ impl Runtime {
                         depth: tile.depth,
                         category: 8,
                         reclaim: false,
+                        age: 0,
                     };
                 }
                 let entry = &index.entries[tile.index];
@@ -1866,6 +2262,14 @@ impl Runtime {
                         .classifications
                         .get(tile.index)
                         .is_some_and(|c| c.reclaim.is_some()),
+                    age: match AgeBand::from_modified(entry.modified, Utc::now().timestamp()) {
+                        AgeBand::Unknown => 0,
+                        AgeBand::Within7Days => 1,
+                        AgeBand::Within30Days => 2,
+                        AgeBand::Within180Days => 3,
+                        AgeBand::Within365Days => 4,
+                        AgeBand::Older => 5,
+                    },
                 }
             })
             .collect::<Vec<_>>();
@@ -1963,6 +2367,15 @@ fn enrich_snapshot(snapshot: &mut ScanSnapshot, cancel: &Cancellation) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn port_system_theme_is_accepted_by_runtime() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut runtime = Runtime::new(fixture.path().join("data")).unwrap();
+        idle(&mut runtime);
+        runtime.command(Command::Setting(Setting::Theme, "system".into()));
+        assert_eq!(runtime.view().settings.theme, "system");
+        assert!(runtime.view().error.is_none());
+    }
     #[test]
     fn cancelled_or_stale_git_result_cannot_publish_verified_counts() {
         let fixture = tempfile::tempdir().unwrap();
@@ -2558,3 +2971,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_port_tests.rs"]
+mod port_tests;
