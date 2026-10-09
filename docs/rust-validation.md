@@ -21,7 +21,14 @@ pass. The cache is bounded by 32 MiB/100000 entries/depth64 and cleared on delet
 Cached observations are labelled rather than claimed fresh. Hidden navigation and
 Largest-list leaks were reproduced and fixed while retaining the full scan and marks.
 
-Locked Windows workspace: **383 passed, 0 failed, 7 ignored** (application109;
+Independent review reproduced two additional defects with real frames: hovering
+the retained map during widening could leave a numeric target bound to the old
+index, and dragging a 420px sidebar capped by the minimum window had a dead zone.
+Accepted scan generations now invalidate transient targets and old index actions;
+sidebar dragging starts from its actual rendered width. Both regressions pass.
+Six pages at 150% also retain their controls, headers and useful table/map space.
+
+Locked Windows workspace: **385 passed, 0 failed, 7 ignored** (application111;
 engine34; services33; native/platform43; vendored core164). Six ignored Git entrypoints
 are exercised by parent tests; one is the existing upstream timing test.
 Whole-workspace format and all-target strict Clippy pass. Portable source/hash and

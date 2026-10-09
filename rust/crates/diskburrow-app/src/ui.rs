@@ -94,6 +94,8 @@ pub struct App {
     pub pointer_tile: Option<usize>,
     pub keyboard_target: bool,
     pub sidebar_drag: bool,
+    sidebar_drag_start: Option<(f32, f32)>,
+    displayed_scan_id: Option<uuid::Uuid>,
     keys_open: bool,
     siblings_open: Option<usize>,
     base_rem: f32,
@@ -198,6 +200,10 @@ impl App {
                 if this
                     .update_in(cx, |this, window, cx| {
                         let mut changed = this.runtime.poll();
+                        if this.displayed_scan_id != this.runtime.scan_id() {
+                            this.reset_map_targets();
+                            changed = true;
+                        }
                         if this.appearance_polled.elapsed() >= Duration::from_secs(2) {
                             let dark = crate::appearance::system_dark();
                             changed |= dark != this.system_dark;
@@ -232,6 +238,7 @@ impl App {
         .detach();
         Self {
             last_root: view.root.clone(),
+            displayed_scan_id: runtime.scan_id(),
             runtime,
             page: Page::Overview,
             root,
@@ -250,6 +257,7 @@ impl App {
             pointer_tile: None,
             keyboard_target: true,
             sidebar_drag: false,
+            sidebar_drag_start: None,
             keys_open: false,
             siblings_open: None,
             base_rem: window.rem_size().as_f32(),
@@ -266,7 +274,31 @@ impl App {
             cleanup_tab: 0,
         }
     }
+    fn reset_map_targets(&mut self) {
+        self.transform = ViewTransform::default();
+        self.runtime.command(Command::MapZoom(1.));
+        self.focused_tile = None;
+        self.pointer_tile = None;
+        self.keyboard_target = true;
+        self.map_drag = None;
+        self.sidebar_drag = false;
+        self.sidebar_drag_start = None;
+        self.siblings_open = None;
+        self.map_tiles.borrow_mut().clear();
+    }
     pub fn dispatch(&mut self, command: Command, cx: &mut Context<Self>) {
+        // Old-frame closures may run after publication but before the new frame.
+        // Keep their generation stale until render rebuilds the view and hit rectangles.
+        if self.displayed_scan_id != self.runtime.scan_id()
+            && matches!(
+                command,
+                Command::MapMark(_) | Command::MapNavigate(_) | Command::MapFocus(_)
+            )
+        {
+            self.reset_map_targets();
+            cx.notify();
+            return;
+        }
         self.confirmation.dismiss();
         if matches!(
             command,
@@ -1777,6 +1809,12 @@ impl App {
                     if event.click_count >= 2 {
                         this.dispatch(Command::Setting(Setting::SidebarWidth, "225".into()), cx);
                     } else {
+                        // At 45% of the pane, the effective cap is .45/.55 * (canvas + divider).
+                        let canvas = this.map_bounds.get().size.width.as_f32();
+                        let effective_width = (this.runtime.view().settings.sidebar_width as f32)
+                            .min((canvas + 7.) * 0.45 / 0.55);
+                        this.sidebar_drag_start =
+                            Some((event.position.x.as_f32(), effective_width));
                         this.sidebar_drag = true;
                     }
                 }),
@@ -1918,6 +1956,12 @@ impl App {
         self.dispatch(Command::MapZoom(self.transform.scale), cx);
     }
     pub fn map_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.displayed_scan_id != self.runtime.scan_id() {
+            self.reset_map_targets();
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if self.confirmation.is_open()
             || self.runtime.view().review.is_some()
             || self.keys_open
@@ -2432,6 +2476,10 @@ impl App {
 }
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.displayed_scan_id != self.runtime.scan_id() {
+            self.reset_map_targets();
+            self.displayed_scan_id = self.runtime.scan_id();
+        }
         let view = self.runtime.view().clone();
         window.set_rem_size(px(
             self.base_rem * view.settings.ui_scale_percent as f32 / 100.
@@ -2504,13 +2552,12 @@ impl Render for App {
                     if this.sidebar_drag
                         && event.pressed_button == Some(gpui_kit::MouseButton::Left)
                     {
-                        let bounds = this.map_bounds.get();
-                        // The canvas's right edge plus the existing sidebar is the pane's fixed right edge.
-                        let right = bounds.origin.x.as_f32()
-                            + bounds.size.width.as_f32()
-                            + 7.
-                            + this.runtime.view().settings.sidebar_width as f32;
-                        let width = (right - event.position.x.as_f32())
+                        let Some((start_x, start_width)) = this.sidebar_drag_start else {
+                            return;
+                        };
+                        // Apply pointer displacement to the rendered width, independent of where
+                        // in the divider the drag started or whether the saved width was capped.
+                        let width = (start_width + start_x - event.position.x.as_f32())
                             .round()
                             .clamp(180., 420.) as u16;
                         if width != this.runtime.view().settings.sidebar_width {
@@ -2521,12 +2568,16 @@ impl Render for App {
                         }
                     } else {
                         this.sidebar_drag = false;
+                        this.sidebar_drag_start = None;
                     }
                 }),
             )
             .on_mouse_up(
                 gpui_kit::MouseButton::Left,
-                cx.listener(|this, _, _, _| this.sidebar_drag = false),
+                cx.listener(|this, _, _, _| {
+                    this.sidebar_drag = false;
+                    this.sidebar_drag_start = None;
+                }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();

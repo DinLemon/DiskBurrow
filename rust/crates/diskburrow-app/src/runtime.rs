@@ -279,6 +279,10 @@ impl Runtime {
     pub fn view(&self) -> &UiView {
         &self.view
     }
+    /// Identity of the completed scan whose numeric map indices are currently live.
+    pub fn scan_id(&self) -> Option<Uuid> {
+        self.snapshot.as_ref().map(|snapshot| snapshot.id)
+    }
     pub fn take_show(&mut self) -> bool {
         std::mem::take(&mut self.show_requested)
     }

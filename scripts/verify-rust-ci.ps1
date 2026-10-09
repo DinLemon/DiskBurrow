@@ -67,6 +67,17 @@ try {
     }
     $appearances = @($proof.appearances | ForEach-Object { $_.language + '/' + $_.theme } | Sort-Object -Unique)
     if (($appearances -join ',') -cne 'en/dark,en/light,ru/dark,ru/light') { throw 'Language and theme proof incomplete.' }
+    $projections = @($proof.display_projections | ForEach-Object { [string]$_.depth + '/' + [string]$_.show_hidden } | Sort-Object -Unique)
+    if (($projections -join ',') -cne '1/False,1/True,3/False,3/True,6/False,6/True' -or
+        $proof.display_settings.theme -cne 'system' -or $proof.display_settings.ui_scale_percent -ne 150 -or
+        @($proof.age_bands | Where-Object { $_ -lt 0 -or $_ -gt 5 }).Count -gt 0 -or $proof.selected_count -ne 1) {
+        throw 'Display and selected-export proof incomplete.'
+    }
+    $selectedPath = Join-Path $fixture 'runtime.selected.txt'
+    $selected = [IO.File]::ReadAllText($selectedPath, [Text.UTF8Encoding]::new($false, $true))
+    if ([string]::IsNullOrWhiteSpace($selected) -or $selected -notmatch 'large\.bin') {
+        throw 'Selected UTF-8 export does not contain the indexed fixture.'
+    }
     $snapshotPath = Join-Path $fixture 'runtime.snapshot.json'
     if ([IO.Path]::GetFullPath($proof.snapshot_export) -ine $snapshotPath) { throw 'Unexpected snapshot export location.' }
     $snapshot = Get-Content -LiteralPath $snapshotPath -Raw | ConvertFrom-Json

@@ -65,6 +65,224 @@ fn owned_fixture() -> tempfile::TempDir {
         .unwrap()
 }
 
+#[gpui_kit::test]
+fn port_review_capped_sidebar_drag_uses_rendered_width(cx: &mut TestAppContext) {
+    let fixture = owned_fixture();
+    cx.update(gpui_omarchy::init);
+    for scale in [75, 100, 150] {
+        let mut runtime = scanned_runtime(fixture.path(), "en", scale);
+        runtime.command(Command::Setting(Setting::SidebarWidth, "420".into()));
+        let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+            App::new(runtime, window, cx)
+        });
+        handle
+            .update(cx, |app, _, cx| {
+                app.page = Page::Map;
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let before = window.find("map-sidebar").bounds().size.width.as_f32();
+            let canvas = window.find("map-viewport").bounds().size.width.as_f32();
+            assert!(before < 400., "fixture must exercise the 45% cap");
+            let from = window.find("map-sidebar-divider").bounds().center();
+            window.drag(from, point(from.x + px(20.), from.y), cx);
+            window.render_frame(cx);
+            let after = window.find("map-sidebar").bounds().size.width.as_f32();
+            let grown = window.find("map-viewport").bounds().size.width.as_f32();
+            assert!(
+                (before - after - 20.).abs() <= 1.,
+                "scale {scale}: {before} -> {after}"
+            );
+            assert!(
+                (grown - canvas - 20.).abs() <= 1.,
+                "scale {scale}: canvas {canvas} -> {grown}"
+            );
+            window.double_click("map-sidebar-divider", cx);
+            assert_eq!(window.find("map-sidebar").bounds().size.width, px(225.));
+            let from = window.find("map-sidebar-divider").bounds().center();
+            window.drag(from, point(from.x + px(20.), from.y), cx);
+            window.render_frame(cx);
+            assert!((window.find("map-sidebar").bounds().size.width.as_f32() - 205.).abs() <= 1.);
+        })
+        .unwrap();
+        handle
+            .update(cx, |app, _, cx| {
+                app.dispatch(Command::Setting(Setting::SidebarWidth, "420".into()), cx)
+            })
+            .unwrap();
+        cx.simulate_window_resize(handle.into(), size(px(1280.), px(700.)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("map-sidebar").bounds().size.width, px(420.));
+            let from = window.find("map-sidebar-divider").bounds().center();
+            window.drag(from, point(from.x + px(20.), from.y), cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("map-sidebar").bounds().size.width, px(400.));
+        })
+        .unwrap();
+        cx.simulate_window_resize(handle.into(), size(px(880.), px(600.)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let before = window.find("map-sidebar").bounds().size.width.as_f32();
+            assert!(before < 400.);
+            let from = window.find("map-sidebar-divider").bounds().center();
+            window.drag(from, point(from.x + px(20.), from.y), cx);
+            window.render_frame(cx);
+            assert!(
+                (before - window.find("map-sidebar").bounds().size.width.as_f32() - 20.).abs()
+                    <= 1.
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn port_review_widen_publication_rejects_old_hover_and_row_indices(cx: &mut TestAppContext) {
+    let fixture = owned_fixture();
+    let parent = fixture.path().join("tree");
+    let root = parent.join("scan");
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("kept.txt");
+    std::fs::write(&file, b"kept").unwrap();
+    cx.update(gpui_omarchy::init);
+    for action in [
+        "space",
+        "enter",
+        "row-mark",
+        "row-navigate",
+        "row-focus",
+        "cancel",
+    ] {
+        let mut runtime = Runtime::new(fixture.path().join(format!("data-{action}"))).unwrap();
+        idle(&mut runtime);
+        runtime.command(Command::SetRoot(root.to_string_lossy().into_owned()));
+        runtime.command(Command::Scan(false));
+        idle(&mut runtime);
+        let old_index = runtime
+            .map_tiles(600., 300.)
+            .iter()
+            .find(|tile| tile.name == "kept.txt")
+            .unwrap()
+            .index;
+        let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+            App::new(runtime, window, cx)
+        });
+        handle
+            .update(cx, |app, _, cx| {
+                app.page = Page::Map;
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+        handle
+            .update(cx, |app, _, cx| {
+                app.dispatch(Command::MapWiden(parent.to_string_lossy().into_owned()), cx);
+                assert!(app.runtime.view().busy);
+                // Retained-map interaction can also change zoom while the worker is pending.
+                app.transform.scale = 2.;
+                app.runtime.command(Command::MapZoom(2.));
+            })
+            .unwrap();
+        // Dispatch a real old-map hover while the previous completed map is retained.
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let bounds = window.find("map-viewport").bounds();
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                    position: bounds.center(),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+        handle
+            .update(cx, |app, window, cx| {
+                assert_eq!(app.active_tile(), Some(old_index));
+                if action == "cancel" {
+                    app.dispatch(Command::Cancel, cx);
+                }
+                // No frame is allowed between index publication and the queued old-frame input.
+                idle(&mut app.runtime);
+                if action == "cancel" {
+                    assert_eq!(app.runtime.map_path(old_index).as_deref(), file.to_str());
+                    assert_eq!(app.transform.scale, 2.);
+                    assert_eq!(app.runtime.view().map_zoom, 2.);
+                    app.dispatch(Command::MapMark(old_index), cx);
+                    assert_eq!(app.runtime.view().selected_count, 1);
+                    return;
+                }
+                assert_eq!(
+                    app.runtime.map_path(old_index).as_deref(),
+                    root.to_str(),
+                    "fixture must change index meaning"
+                );
+                match action {
+                    "space" | "enter" => app.map_key(
+                        &KeyDownEvent {
+                            keystroke: gpui_kit::Keystroke::parse(action).unwrap(),
+                            is_held: false,
+                            prefer_character_input: false,
+                        },
+                        window,
+                        cx,
+                    ),
+                    "row-mark" => app.dispatch(Command::MapMark(old_index), cx),
+                    "row-navigate" => app.dispatch(Command::MapNavigate(old_index), cx),
+                    _ => app.dispatch(Command::MapFocus(old_index), cx),
+                }
+                assert_eq!(
+                    app.runtime.view().selected_count,
+                    0,
+                    "{action} marked an entry from a different index"
+                );
+                assert_eq!(app.active_tile(), None, "{action} retained a stale target");
+                assert!(
+                    app.map_tiles.borrow().is_empty(),
+                    "{action} retained stale hit rectangles"
+                );
+                assert_eq!(app.transform.scale, 1.);
+                assert_eq!(
+                    app.runtime.view().map_zoom,
+                    1.,
+                    "new index zoom label must match its transform"
+                );
+            })
+            .unwrap();
+        if action == "cancel" {
+            continue;
+        }
+        cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        handle
+            .update(cx, |app, _, cx| {
+                let fresh_index = app
+                    .map_tiles
+                    .borrow()
+                    .iter()
+                    .find(|tile| tile.name == "kept.txt")
+                    .unwrap()
+                    .index;
+                assert_ne!(fresh_index, old_index);
+                app.dispatch(Command::MapMark(fresh_index), cx);
+                assert_eq!(
+                    app.runtime.view().selected_count,
+                    1,
+                    "fresh frame remains interactive"
+                );
+            })
+            .unwrap();
+    }
+    assert_eq!(std::fs::read(file).unwrap(), b"kept");
+}
+
 fn scanned_runtime(fixture: &std::path::Path, language: &str, scale: u16) -> Runtime {
     let root = fixture.join("scan");
     for name in ["alpha", "beta"] {
