@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "diskburrow-app"
-version = "0.3.0-alpha.3"
+version = "0.3.0-alpha.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "diskburrow-engine"
-version = "0.3.0-alpha.3"
+version = "0.3.0-alpha.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1454,7 +1454,7 @@ dependencies = [
 
 [[package]]
 name = "diskburrow-services"
-version = "0.3.0-alpha.3"
+version = "0.3.0-alpha.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1467,12 +1467,14 @@ dependencies = [
 
 [[package]]
 name = "diskburrow-windows"
-version = "0.3.0-alpha.3"
+version = "0.3.0-alpha.6"
 dependencies = [
  "anyhow",
  "chrono",
  "diskburrow-services",
+ "disktree-core",
  "serde",
+ "serde_json",
  "tempfile",
  "uuid",
  "windows-sys 0.61.2",
@@ -1480,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "disktree-core"
-version = "0.3.0-alpha.3"
+version = "0.3.0-alpha.6"
 dependencies = [
  "chrono",
  "rayon",

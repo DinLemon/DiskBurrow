@@ -80,6 +80,7 @@ pub fn gb(bytes: i64, language: &str) -> String {
 pub fn text(language: &str, key: &str) -> String {
     TRANSLATIONS
         .iter()
+        .chain(EXTRA_TRANSLATIONS.iter())
         .find(|(candidate, _, _)| *candidate == key)
         .map_or_else(
             || key.to_owned(),
@@ -96,6 +97,228 @@ pub fn text(language: &str, key: &str) -> String {
 }
 
 // Imported verbatim from the original 0.2.2 WPF locale resources.
+const EXTRA_TRANSLATIONS: &[(&str, &str, &str)] = &[
+    ("Map.Marked", "Отмеченное", "Marked roots"),
+    ("Map.Forecast", "Прогноз места", "Space forecast"),
+    (
+        "Map.CoveredHint",
+        "Включено целиком выбранной папкой; ребёнка нельзя исключить отдельно",
+        "Included by the marked parent; a child cannot be excluded separately",
+    ),
+    (
+        "Map.UnmarkParent",
+        "Снять отметку с родителя",
+        "Unmark parent",
+    ),
+    (
+        "Map.NoMarks",
+        "Нет отмеченных объектов",
+        "No marked objects",
+    ),
+    ("Map.ClearMarks", "Снять все отметки", "Clear all marks"),
+    ("Map.Recommendations", "Стоит посмотреть", "Worth a look"),
+    ("Map.Displayed", "Показано", "Displayed"),
+    (
+        "Map.FreeAfter",
+        "Свободно после успешного удаления",
+        "Free after successful deletion",
+    ),
+    (
+        "Map.ForecastPartial",
+        "Данные неполные; итоговое освобождение неизвестно",
+        "Incomplete metadata; final reclaim is unknown",
+    ),
+    (
+        "Map.ForecastPending",
+        "Проверка метаданных для прогноза…",
+        "Checking metadata for the forecast…",
+    ),
+    (
+        "Map.ForecastUnknown",
+        "Прогноз неизвестен; нужен свежий предпросмотр",
+        "Forecast unknown; a fresh review is required",
+    ),
+    (
+        "Manual.ObservationLimit",
+        "Достигнут предел наблюдения; данные неполные",
+        "Observation limit reached; metadata is incomplete",
+    ),
+    (
+        "Keys.TrashUnsupported",
+        "Корзина не поддерживается; удаление безвозвратное после отдельного подтверждения",
+        "Trash is unsupported; permanent deletion requires separate confirmation",
+    ),
+    (
+        "Map.Cached",
+        "Часть данных из кеша предыдущего сканирования; это не свежая проверка.",
+        "Some observations reused from the previous scan; these are not fresh checks.",
+    ),
+    ("Map.Visible", "Видимое", "Visible"),
+    ("Map.FullScan", "Полное сканирование", "Full scan"),
+    (
+        "Age.Note",
+        "Возраст изменения — не признак мусора.",
+        "Last-write age is not evidence of junk.",
+    ),
+    ("Settings.Theme.System", "Системная", "System"),
+    ("Display.Scale", "Масштаб интерфейса", "Interface scale"),
+    ("Display.Help", "Клавиши", "Keys"),
+    ("Display.Hidden", "Скрытые", "Hidden"),
+    ("Display.Depth", "Глубина", "Depth"),
+    (
+        "Display.SidebarReset",
+        "Сбросить ширину панели",
+        "Reset sidebar width",
+    ),
+    ("Display.Siblings", "Соседние объекты", "Sibling objects"),
+    ("Age.Mode", "Возраст / категории", "Age / categories"),
+    ("Age.Unknown", "Неизвестно / будущее", "Unknown / future"),
+    ("Age.7", "До 7 дней", "Within 7 days"),
+    ("Age.30", "8–30 дней", "8–30 days"),
+    ("Age.180", "31–180 дней", "31–180 days"),
+    ("Age.365", "181–365 дней", "181–365 days"),
+    ("Age.Older", "Более года", "Older than a year"),
+    ("Selection.Save", "Выбранное в TXT", "Save selected TXT"),
+    (
+        "Selection.Copy",
+        "Скопировать запрос для разбора",
+        "Copy review prompt",
+    ),
+    (
+        "Display.Keys",
+        "Стрелки / H J K L: плитки. Tab / Shift+Tab: соседи. Enter: войти. Пробел / X / Ctrl+клик: отметить. Backspace / U: вверх. Esc: сброс поиска, отмена сканирования, сброс выбора, вверх. Alt+←/→: история. + / − / 0: масштаб карты. [ / ]: глубина. T: размер / файлы / возраст. D: на диске / длина. I: скрытые. G: системный диск. V: диски. P: сведения о выборе. O / правый клик: Проводник. S / /: поиск. C: предпросмотр. R / F5: скан. Q: выход. ?: клавиши. Ctrl+O: папка. Ctrl+ +/−/0: масштаб интерфейса. Ручной предпросмотр: S — TXT, A — запрос, ! — снять отметки, Enter — отдельное подтверждение удаления. Корзина не поддерживается. Перед передачей экспортированных путей проверьте их.",
+        "Arrows / H J K L: tiles. Tab / Shift+Tab: siblings. Enter: descend. Space / X / Ctrl+click: mark. Backspace / U: ascend. Esc: clear search, cancel scan, dismiss selection, ascend. Alt+Left/Right: history. + / - / 0: map zoom. [ / ]: depth. T: size / files / age. D: allocated / apparent. I: hidden. G: system disk. V: volumes. P: selection details. O / right click: Explorer. S / /: search. C: review. R / F5: scan. Q: exit. ?: keys. Ctrl+O: folder. Ctrl+ +/−/0: interface scale. Manual review: S saves TXT, A copies prompt, ! clears marks, Enter opens separate deletion confirmation. Trash is unsupported. Inspect exported paths before sharing.",
+    ),
+    ("Insights.Title", "Стоит посмотреть", "Worth a look"),
+    (
+        "Insights.Note",
+        "Подсказки по именам и возрасту. Проверьте содержимое; это не разрешение на удаление.",
+        "Hints from names and age. Inspect contents; these do not authorize deletion.",
+    ),
+    ("Insights.Coverage", "Неполные данные", "Incomplete data"),
+    ("Insights.Worktrees", "Рабочие деревья", "Worktrees"),
+    ("Insights.Stale", "Старый эксперимент", "Old experiment"),
+    ("Insights.Days", "дней", "days"),
+    ("Insights.Observed", "Замеченные кеши", "Observed caches"),
+    ("Category.Code", "Код", "Code"),
+    ("Category.AgentScratch", "Данные агентов", "Agent scratch"),
+    ("Category.Toolchain", "Инструменты", "Toolchains"),
+    ("Category.Synced", "Синхронизация", "Synced"),
+    ("Category.Git", "Git", "Git"),
+    ("Category.Media", "Медиа", "Media"),
+    ("Category.Documents", "Документы", "Documents"),
+    ("Category.Cache", "Кеш", "Cache"),
+    ("Category.Other", "Прочее", "Other"),
+    (
+        "Reclaim.Regenerable",
+        "Воссоздаваемый кеш",
+        "Regenerable cache",
+    ),
+    (
+        "Reclaim.SyncHistory",
+        "История синхронизации",
+        "Sync history",
+    ),
+    ("Reclaim.PackageStore", "Хранилище пакетов", "Package store"),
+    ("Reclaim.BuildOutput", "Результаты сборки", "Build output"),
+    (
+        "Reclaim.Reinstallable",
+        "Можно переустановить",
+        "Reinstallable",
+    ),
+    ("Reclaim.SandboxLayers", "Слои песочниц", "Sandbox layers"),
+    ("Reclaim.Snapshots", "Снимки", "Snapshots"),
+    ("Reclaim.Trash", "Корзина", "Trash"),
+    ("Reclaim.Temporary", "Временные данные", "Temporary data"),
+    (
+        "Reclaim.Hatch",
+        "Штриховка: возможна очистка; сначала проверьте содержимое",
+        "Hatch: potentially reclaimable; inspect contents first",
+    ),
+    (
+        "Reclaim.Known",
+        "Известное место на текущем томе",
+        "Known reclaim on current volume",
+    ),
+    (
+        "Reclaim.Excluded",
+        "Исключено: жёсткие ссылки / неизвестно / другой том",
+        "Excluded: hardlinks / unknown / other volume",
+    ),
+    (
+        "Reclaim.Note",
+        "Оценка при успешном удалении. Изменение свободного места зависит и от других процессов.",
+        "Estimate if deletion succeeds. Volume free-space change also reflects other processes.",
+    ),
+    (
+        "Reclaim.Actual",
+        "Изменение свободного места на томе",
+        "Volume free-space change",
+    ),
+    ("Git.Checking", "Git: проверка…", "Git: checking…"),
+    (
+        "Git.NotRepository",
+        "Git: не корень репозитория",
+        "Git: not a repository root",
+    ),
+    (
+        "Git.Unknown",
+        "Git: состояние неизвестно",
+        "Git: state unknown",
+    ),
+    ("Git.Changed", "изменено", "changed"),
+    ("Git.Untracked", "не отслеживается", "untracked"),
+    ("Git.Stash", "stash", "stash"),
+    ("Git.Ahead", "не отправлено", "ahead"),
+    ("Git.Unavailable", "Git не установлен", "Git unavailable"),
+    (
+        "Git.Unsafe",
+        "исполняемая или подключаемая конфигурация",
+        "executable or included configuration",
+    ),
+    ("Git.Failed", "ошибка проверки", "inspection failed"),
+    (
+        "Git.Timeout",
+        "истекло время проверки",
+        "inspection timed out",
+    ),
+    (
+        "Git.OutputLimit",
+        "превышен предел вывода",
+        "output limit exceeded",
+    ),
+    ("Git.Cancelled", "проверка отменена", "inspection cancelled"),
+    (
+        "Git.NoUpstream",
+        "нет upstream; неотправленные коммиты неизвестны",
+        "no upstream; ahead commits unknown",
+    ),
+    (
+        "Git.Detached",
+        "detached HEAD; неотправленные коммиты неизвестны",
+        "detached HEAD; ahead commits unknown",
+    ),
+    (
+        "Git.Unsupported",
+        "неподдерживаемый репозиторий",
+        "unsupported repository",
+    ),
+    (
+        "Git.ReviewNote",
+        "Git проверен повторно для выбранных корней. Данные могут измениться; счётчики не разрешают удаление.",
+        "Git rechecked for selected roots. Data may change; counters do not authorize deletion.",
+    ),
+    (
+        "Git.ReviewLimit",
+        "Часть выбранных корней не проверена: максимум 8 за просмотр",
+        "Some selected roots were not checked: maximum 8 per review",
+    ),
+    (
+        "Manual.RefreshFailed",
+        "Удаление завершено; повторное сканирование не удалось",
+        "Deletion completed; refresh scan failed",
+    ),
+];
 const TRANSLATIONS: &[(&str, &str, &str)] = &[
     (
         "Cleanup.Cancelled",

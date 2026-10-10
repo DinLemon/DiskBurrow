@@ -126,6 +126,131 @@ impl ApprovedTempRoot {
         &self.path
     }
 }
+const OBSERVATION_MAX_ROOTS: usize = 2_000;
+const OBSERVATION_MAX_PATHS: usize = 100_000;
+const OBSERVATION_SECONDS: u64 = 3;
+const OBSERVATION_MAX_BYTES: usize = 64 * 1024 * 1024;
+const OBSERVATION_MAX_INPUT_BYTES: usize = 1024 * 1024;
+const OBSERVATION_MAX_PATH_BYTES: usize = 16 * 1024;
+const OBSERVATION_MAX_DEPTH: usize = 64;
+
+struct ObservationBudget {
+    started: std::time::Instant,
+    visited: usize,
+    max_paths: usize,
+    bytes: usize,
+    max_bytes: usize,
+}
+impl ObservationBudget {
+    fn new() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            visited: 0,
+            max_paths: OBSERVATION_MAX_PATHS,
+            bytes: 0,
+            max_bytes: OBSERVATION_MAX_BYTES,
+        }
+    }
+    fn reserve_input(&mut self, selected: &[String], cancel: &Cancellation) -> Result<(), Fault> {
+        self.check(0, cancel)?;
+        if selected.len() > OBSERVATION_MAX_ROOTS {
+            return Err(Fault::policy("Manual.ObservationLimit"));
+        }
+        let mut input_bytes = 0usize;
+        for path in selected {
+            self.check(0, cancel)?;
+            Self::path_dimensions(path)?;
+            input_bytes = input_bytes
+                .checked_add(path.len())
+                .filter(|total| *total <= OBSERVATION_MAX_INPUT_BYTES)
+                .ok_or_else(|| Fault::policy("Manual.ObservationLimit"))?;
+        }
+        // Canonical/normalized copies, duplicate outermost-root list, warnings,
+        // lowercase comparison scratch and capacity overhead are reserved upfront.
+        let cost = input_bytes
+            .checked_mul(12)
+            .and_then(|n| {
+                selected
+                    .len()
+                    .checked_mul(512)
+                    .and_then(|r| n.checked_add(r))
+            })
+            .ok_or_else(|| Fault::policy("Manual.ObservationLimit"))?;
+        self.reserve_bytes(cost)
+    }
+    fn path_dimensions(path: &str) -> Result<(usize, usize), Fault> {
+        if path.len() > OBSERVATION_MAX_PATH_BYTES {
+            return Err(Fault::policy("Manual.ObservationLimit"));
+        }
+        let depth = path
+            .split(['\\', '/'])
+            .filter(|part| !part.is_empty())
+            .count()
+            .saturating_sub(1);
+        if depth > OBSERVATION_MAX_DEPTH {
+            return Err(Fault::policy("Manual.ObservationLimit"));
+        }
+        Ok((path.len(), depth))
+    }
+    fn reserve_path(
+        &mut self,
+        path: &str,
+        root_bytes: usize,
+        cancel: &Cancellation,
+    ) -> Result<(), Fault> {
+        let (bytes, depth) = Self::path_dimensions(path)?;
+        self.reserve_path_dimensions(bytes, depth, root_bytes, cancel)
+    }
+    fn reserve_path_dimensions(
+        &mut self,
+        path_bytes: usize,
+        depth: usize,
+        root_bytes: usize,
+        cancel: &Cancellation,
+    ) -> Result<(), Fault> {
+        self.check(0, cancel)?;
+        if path_bytes > OBSERVATION_MAX_PATH_BYTES || depth > OBSERVATION_MAX_DEPTH {
+            return Err(Fault::policy("Manual.ObservationLimit"));
+        }
+        // Reserve before creating the queued path or opening its ancestor lease.
+        // Charges are cumulative: they cover queued/visited strings, observations,
+        // root copies, lease/ancestor keys, identities and vector/hash capacities.
+        // Ancestors may each be as long as the path, hence the conservative depth
+        // factor. Retaining old charges intentionally overestimates live memory.
+        let cost = depth
+            .checked_mul(6)
+            .and_then(|n| n.checked_add(12))
+            .and_then(|n| path_bytes.checked_mul(n))
+            .and_then(|n| root_bytes.checked_mul(4).and_then(|r| n.checked_add(r)))
+            .and_then(|n| depth.checked_mul(512).and_then(|a| n.checked_add(a)))
+            .and_then(|n| n.checked_add(2048))
+            .ok_or_else(|| Fault::policy("Manual.ObservationLimit"))?;
+        self.reserve_bytes(cost)
+    }
+    fn reserve_bytes(&mut self, cost: usize) -> Result<(), Fault> {
+        let total = self
+            .bytes
+            .checked_add(cost)
+            .filter(|total| *total <= self.max_bytes)
+            .ok_or_else(|| Fault::policy("Manual.ObservationLimit"))?;
+        self.bytes = total;
+        Ok(())
+    }
+    fn check(&self, pending: usize, cancel: &Cancellation) -> Result<(), Fault> {
+        if cancel.is_cancelled() {
+            return Err(Fault::policy("Manual.Cancelled"));
+        }
+        if self.started.elapsed() >= std::time::Duration::from_secs(OBSERVATION_SECONDS)
+            || self
+                .visited
+                .checked_add(pending)
+                .is_none_or(|total| total > self.max_paths)
+        {
+            return Err(Fault::policy("Manual.ObservationLimit"));
+        }
+        Ok(())
+    }
+}
 struct ManualIssued {
     plan: ManualDeletePlan,
     ancestors: HashMap<String, FileIdentity>,
@@ -539,26 +664,17 @@ impl CleanupService {
                 result,
             ));
         }
-        let mut measured = !before.is_empty();
-        let mut delta = 0i64;
-        for (volume, previous) in before {
-            match (previous, available_bytes(&volume)) {
-                (Some(b), Some(a)) => {
-                    if let Some(d) = a.checked_sub(b).and_then(|d| delta.checked_add(d)) {
-                        delta = d
-                    } else {
-                        measured = false
-                    }
-                }
-                _ => measured = false,
-            }
-        }
+        let delta = volume_change(
+            before
+                .into_iter()
+                .map(|(volume, previous)| (previous, available_bytes(&volume))),
+        );
         Ok(CleanupReport {
             plan_id,
             items,
             was_cancelled: cancel.is_cancelled(),
-            free_space_delta_bytes: if measured { delta } else { 0 },
-            free_space_delta_available: measured,
+            free_space_delta_bytes: delta.unwrap_or(0),
+            free_space_delta_available: delta.is_some(),
         })
     }
     fn delete_candidate(&self, c: &CleanupCandidate, cancel: &Cancellation) -> Result<(), Fault> {
@@ -669,6 +785,30 @@ impl CleanupService {
         }
         true
     }
+    /// Bounded metadata observation for a forecast; never accesses deletion authority.
+    /// The returned UUID is not issued and cannot authorize `execute_manual`.
+    /// Limits share one cooperative deadline; synchronous OS calls are not preempted.
+    pub fn observe_manual(
+        &self,
+        selected: &[String],
+        cancel: &Cancellation,
+    ) -> anyhow::Result<ManualDeletePlan> {
+        self.observe_manual_since(selected, cancel, std::time::Instant::now())
+    }
+    /// Share the caller's forecast deadline, including work done before collection.
+    pub fn observe_manual_since(
+        &self,
+        selected: &[String],
+        cancel: &Cancellation,
+        started: std::time::Instant,
+    ) -> anyhow::Result<ManualDeletePlan> {
+        let budget = ObservationBudget {
+            started,
+            ..ObservationBudget::new()
+        };
+        self.collect_manual(selected, cancel, Some(budget))
+            .map(|(plan, _)| plan)
+    }
     pub fn preview_manual(
         &self,
         selected: &[String],
@@ -680,21 +820,56 @@ impl CleanupService {
             a.manual_generation = a.manual_generation.wrapping_add(1);
             a.manual_generation
         };
+        let (plan, ancestors) = self.collect_manual(selected, cancel, None)?;
+        let mut a = self.authority.lock().unwrap();
+        if plan.can_execute() && a.manual_generation == generation {
+            a.manual = Some(ManualIssued {
+                plan: plan.clone(),
+                ancestors,
+            });
+        }
+        Ok(plan)
+    }
+    fn collect_manual(
+        &self,
+        selected: &[String],
+        cancel: &Cancellation,
+        mut budget: Option<ObservationBudget>,
+    ) -> anyhow::Result<(ManualDeletePlan, HashMap<String, FileIdentity>)> {
         cancel.check()?;
         let mut warnings = Vec::new();
         let mut roots: Vec<String> = Vec::new();
-        for selected in selected {
-            cancel.check()?;
-            match canonical(selected).filter(|p| self.allowed_manual(p)) {
-                Some(p) => {
-                    if !roots.iter().any(|r| equals_path(r, &p)) {
-                        roots.push(p);
-                    }
+        let input_limited = budget
+            .as_mut()
+            .is_some_and(|b| b.reserve_input(selected, cancel).is_err());
+        cancel.check()?;
+        if input_limited {
+            warnings.push(ManualDeleteWarning {
+                path: None,
+                reason_key: "Manual.ObservationLimit".into(),
+            });
+        } else {
+            for selected in selected {
+                cancel.check()?;
+                if budget.as_ref().is_some_and(|b| b.check(0, cancel).is_err()) {
+                    cancel.check()?;
+                    warnings.push(ManualDeleteWarning {
+                        path: None,
+                        reason_key: "Manual.ObservationLimit".into(),
+                    });
+                    break;
                 }
-                None => warnings.push(ManualDeleteWarning {
-                    path: Some(selected.clone()),
-                    reason_key: "Manual.ProtectedPath".into(),
-                }),
+                match canonical(selected).filter(|p| self.allowed_manual(p)) {
+                    Some(p) => {
+                        if !roots.iter().any(|r| equals_path(r, &p)) {
+                            roots.push(p);
+                        }
+                    }
+                    None => warnings.push(ManualDeleteWarning {
+                        path: Some(selected.clone()),
+                        reason_key: "Manual.ProtectedPath".into(),
+                    }),
+                }
             }
         }
         let all = roots.clone();
@@ -706,16 +881,20 @@ impl CleanupService {
         let mut entries = Vec::new();
         let mut ancestors = HashMap::new();
         for root in &roots {
-            match self.inventory(root, &mut entries, &mut ancestors, cancel) {
+            match self.inventory(root, &mut entries, &mut ancestors, cancel, budget.as_mut()) {
                 Ok(()) => {}
                 Err(e) => {
                     if cancel.is_cancelled() {
                         cancel.check()?;
                     }
+                    let exhausted = e.reason == "Manual.ObservationLimit";
                     warnings.push(ManualDeleteWarning {
                         path: Some(e.path.unwrap_or_else(|| root.clone())),
                         reason_key: e.reason.into(),
                     });
+                    if exhausted {
+                        break;
+                    }
                 }
             }
         }
@@ -727,14 +906,7 @@ impl CleanupService {
             entries,
             warnings,
         };
-        let mut a = self.authority.lock().unwrap();
-        if plan.can_execute() && a.manual_generation == generation {
-            a.manual = Some(ManualIssued {
-                plan: plan.clone(),
-                ancestors,
-            });
-        }
-        Ok(plan)
+        Ok((plan, ancestors))
     }
     fn inventory(
         &self,
@@ -742,32 +914,51 @@ impl CleanupService {
         entries: &mut Vec<ManualDeleteEntry>,
         ancestors: &mut HashMap<String, FileIdentity>,
         cancel: &Cancellation,
+        mut budget: Option<&mut ObservationBudget>,
     ) -> Result<(), Fault> {
+        if let Some(b) = budget.as_mut() {
+            b.check(1, cancel)?;
+            b.reserve_path(root, root.len(), cancel)?;
+        }
         let mut pending = vec![root.to_owned()];
         while let Some(path) = pending.pop() {
             let result = (|| -> Result<(), Fault> {
                 if cancel.is_cancelled() {
                     return Err(Fault::policy("Manual.Cancelled"));
                 }
+                if let Some(b) = budget.as_mut() {
+                    b.visited += 1;
+                    b.check(pending.len(), cancel)?;
+                }
                 if !self.allowed_manual(&path) {
                     return Err(Fault::changed("Manual.ProtectedPath"));
                 }
-                let lease =
-                    AncestorLease::open(self.api.as_ref(), &path).map_err(Fault::manual_io)?;
+                let lease = AncestorLease::open_checked(self.api.as_ref(), &path, &mut || {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)
+                })?;
                 merge_ancestors(ancestors, lease.identities())?;
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 let handle = self.api.open_metadata(&path).map_err(Fault::manual_io)?;
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 let o = self
                     .api
                     .inspect_handle(&handle, &path)
                     .map_err(Fault::manual_io)?;
-                self.ensure_manual_safe(&path, &handle, &o)?;
+                self.ensure_manual_safe_checked(&path, &handle, &o, &mut || {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)
+                })?;
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 if o.attributes & DIRECTORY != 0 {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                     let dir = self.api.open_directory(&path).map_err(Fault::manual_io)?;
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                     let pinned = self
                         .api
                         .inspect_handle(&dir, &path)
                         .map_err(Fault::manual_io)?;
-                    self.ensure_manual_safe(&path, &dir, &pinned)?;
+                    self.ensure_manual_safe_checked(&path, &dir, &pinned, &mut || {
+                        Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)
+                    })?;
                     if pinned.identity != o.identity {
                         return Err(Fault::changed("Manual.Changed"));
                     }
@@ -775,17 +966,49 @@ impl CleanupService {
                         ancestors,
                         [(path.as_str(), o.identity.as_ref().unwrap())].into_iter(),
                     )?;
-                    for child in fs::read_dir(&path).map_err(Fault::manual_io)? {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
+                    let mut children = fs::read_dir(&path).map_err(Fault::manual_io)?;
+                    loop {
+                        // Check before next(), which itself may perform an enumeration syscall.
+                        Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
+                        let Some(child) = children.next() else {
+                            break;
+                        };
+                        if cancel.is_cancelled() {
+                            return Err(Fault::policy("Manual.Cancelled"));
+                        }
+                        if let Some(b) = budget.as_ref() {
+                            b.check(pending.len() + 1, cancel)?;
+                        }
                         let child = child.map_err(Fault::manual_io)?;
+                        if let Some(b) = budget.as_mut() {
+                            let name = child.file_name();
+                            let child_bytes = path
+                                .len()
+                                .checked_add(1)
+                                .and_then(|n| n.checked_add(name.len()))
+                                .ok_or_else(|| Fault::policy("Manual.ObservationLimit"))?;
+                            let (_, parent_depth) = ObservationBudget::path_dimensions(&path)?;
+                            b.reserve_path_dimensions(
+                                child_bytes,
+                                parent_depth + 1,
+                                root.len(),
+                                cancel,
+                            )?;
+                        }
                         pending.push(child.path().to_string_lossy().into_owned());
                     }
                 }
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 entries.push(ManualDeleteEntry {
                     id: Uuid::new_v4(),
                     root_path: root.into(),
                     file: o,
                 });
-                lease.verify().map_err(Fault::manual_io)?;
+                lease.verify_checked(&mut || {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)
+                })?;
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 Ok(())
             })();
             if let Err(mut e) = result {
@@ -795,18 +1018,40 @@ impl CleanupService {
         }
         Ok(())
     }
+    fn inventory_checkpoint(
+        budget: Option<&ObservationBudget>,
+        pending: usize,
+        cancel: &Cancellation,
+    ) -> Result<(), Fault> {
+        // Existing authoritative inventory keeps its original checks and policy.
+        // Only observation has the per-call deadline/cancellation checkpoint.
+        budget.map_or(Ok(()), |budget| budget.check(pending, cancel))
+    }
     fn ensure_manual_safe(
         &self,
         path: &str,
         h: &NativeHandle,
         o: &FileObservation,
     ) -> Result<(), Fault> {
+        self.ensure_manual_safe_checked(path, h, o, &mut || Ok(()))
+    }
+    fn ensure_manual_safe_checked(
+        &self,
+        path: &str,
+        h: &NativeHandle,
+        o: &FileObservation,
+        checkpoint: &mut impl FnMut() -> Result<(), Fault>,
+    ) -> Result<(), Fault> {
         if o.identity.is_none()
             || o.logical_bytes < 0
             || o.attributes & (REPARSE | READONLY | SYSTEM) != 0
             || is_cloud(o.attributes)
-            || canonical(&self.api.final_path(h).map_err(Fault::manual_io)?)
-                .is_none_or(|p| !equals_path(path, &p))
+        {
+            return Err(Fault::changed("Manual.UnsafePath"));
+        }
+        checkpoint()?;
+        if canonical(&self.api.final_path(h).map_err(Fault::manual_io)?)
+            .is_none_or(|p| !equals_path(path, &p))
         {
             return Err(Fault::changed("Manual.UnsafePath"));
         }
@@ -830,6 +1075,19 @@ impl CleanupService {
         };
         let _lock = self.execution.lock().unwrap();
         let mut items = Vec::new();
+        // Measure every involved drive before any deletion, even for cancelled/partial attempts.
+        // This observes volume state; concurrent programs can make the signed delta negative.
+        let before = issued
+            .plan
+            .roots
+            .iter()
+            .fold(HashMap::new(), |mut volumes, root| {
+                let volume = &root[..3];
+                volumes
+                    .entry(volume.to_owned())
+                    .or_insert_with(|| available_bytes(volume));
+                volumes
+            });
         for root in &issued.plan.roots {
             let mut entries = issued
                 .plan
@@ -869,12 +1127,17 @@ impl CleanupService {
                 ));
             }
         }
+        let delta = volume_change(
+            before
+                .into_iter()
+                .map(|(volume, previous)| (previous, available_bytes(&volume))),
+        );
         Ok(CleanupReport {
             plan_id,
             items,
             was_cancelled: cancel.is_cancelled(),
-            free_space_delta_bytes: 0,
-            free_space_delta_available: false,
+            free_space_delta_bytes: delta.unwrap_or(0),
+            free_space_delta_available: delta.is_some(),
         })
     }
     fn revalidate_inventory(
@@ -891,7 +1154,7 @@ impl CleanupService {
         verify_expected(&lease, expected)?;
         let mut fresh = Vec::new();
         let mut ancestors = HashMap::new();
-        self.inventory(root, &mut fresh, &mut ancestors, cancel)?;
+        self.inventory(root, &mut fresh, &mut ancestors, cancel, None)?;
         if fresh.len() != entries.len() {
             return Err(Fault::changed("Manual.Changed"));
         }
@@ -1030,6 +1293,11 @@ struct Fault {
     reason: &'static str,
     path: Option<String>,
 }
+impl From<io::Error> for Fault {
+    fn from(error: io::Error) -> Self {
+        Self::manual_io(error)
+    }
+}
 impl Fault {
     fn changed(reason: &'static str) -> Self {
         Self {
@@ -1120,4 +1388,311 @@ fn available_bytes(volume: &str) -> Option<i64> {
         )
     };
     (ok != 0).then(|| i64::try_from(available).ok()).flatten()
+}
+
+fn volume_change(
+    observations: impl IntoIterator<Item = (Option<i64>, Option<i64>)>,
+) -> Option<i64> {
+    let mut total = None;
+    for (before, after) in observations {
+        let before = before.filter(|bytes| *bytes >= 0)?;
+        let after = after.filter(|bytes| *bytes >= 0)?;
+        total = Some(
+            total
+                .unwrap_or(0i64)
+                .checked_add(after.checked_sub(before)?)?,
+        );
+    }
+    total
+}
+
+#[cfg(test)]
+mod volume_change_tests {
+    use super::volume_change;
+
+    #[test]
+    fn signed_change_keeps_negative_concurrent_changes_and_sums_unique_volumes() {
+        assert_eq!(volume_change([(Some(100), Some(50))]), Some(-50));
+        assert_eq!(
+            volume_change([(Some(100), Some(200)), (Some(50), Some(25))]),
+            Some(75)
+        );
+    }
+
+    #[test]
+    fn missing_invalid_or_overflowed_observations_make_entire_change_unavailable() {
+        for observations in [
+            vec![],
+            vec![(None, Some(1))],
+            vec![(Some(1), None)],
+            vec![(Some(-1), Some(1))],
+            vec![(Some(1), Some(-1))],
+            vec![(Some(0), Some(i64::MAX)), (Some(0), Some(1))],
+        ] {
+            assert_eq!(volume_change(observations), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod observation_budget_tests {
+    use super::*;
+    use crate::FixedRuleEnvironment;
+
+    fn service_fixture() -> (tempfile::TempDir, CleanupService) {
+        let scratch = std::env::temp_dir();
+        assert!(scratch.is_absolute());
+        let tree = tempfile::Builder::new()
+            .prefix("taskowned-observer-")
+            .tempdir_in(&scratch)
+            .unwrap();
+        assert_eq!(tree.path().parent(), Some(scratch.as_path()));
+        let path = |part: &str| tree.path().join(part).to_string_lossy().into_owned();
+        let known = KnownDirectories {
+            user_profile: path("profile"),
+            local_app_data: path(r"profile\AppData\Local"),
+            windows: path("Windows"),
+            program_files: path("Program Files"),
+            program_files_x86: path("Program Files x86"),
+            program_data: path("ProgramData"),
+            temp_hint: path("temp"),
+            user_library_roots: vec![],
+            user_library_roots_verified: true,
+        };
+        let svc = CleanupService::new(
+            Arc::new(FixedRuleEnvironment {
+                known,
+                owner_state: OwnerProcessState::Closed,
+            }),
+            path("application"),
+            path("data"),
+        );
+        (tree, svc)
+    }
+
+    #[test]
+    fn queue_reservation_counts_visited_and_pending_together() {
+        let budget = ObservationBudget {
+            started: std::time::Instant::now(),
+            visited: 99_999,
+            max_paths: 100_000,
+            ..ObservationBudget::new()
+        };
+        assert!(budget.check(1, &Cancellation::default()).is_ok());
+        assert_eq!(
+            budget
+                .check(2, &Cancellation::default())
+                .err()
+                .unwrap()
+                .reason,
+            "Manual.ObservationLimit"
+        );
+        assert_eq!(
+            budget
+                .check(usize::MAX, &Cancellation::default())
+                .err()
+                .unwrap()
+                .reason,
+            "Manual.ObservationLimit"
+        );
+    }
+
+    #[test]
+    fn shared_deadline_and_cancellation_stop_observation() {
+        let budget = ObservationBudget {
+            started: std::time::Instant::now() - std::time::Duration::from_secs(4),
+            visited: 0,
+            max_paths: 100_000,
+            ..ObservationBudget::new()
+        };
+        assert_eq!(
+            budget
+                .check(0, &Cancellation::default())
+                .err()
+                .unwrap()
+                .reason,
+            "Manual.ObservationLimit"
+        );
+        let cancel = Cancellation::default();
+        cancel.cancel();
+        assert_eq!(
+            budget.check(0, &cancel).err().unwrap().reason,
+            "Manual.Cancelled"
+        );
+    }
+
+    #[test]
+    fn taskowned_wide_native_queue_is_stopped_before_unbounded_growth() {
+        let (tree, svc) = service_fixture();
+        let root = tree.path().join("selected");
+        fs::create_dir(&root).unwrap();
+        for n in 0..12 {
+            fs::write(root.join(format!("file-{n}")), b"fixture").unwrap();
+        }
+        let mut budget = ObservationBudget {
+            started: std::time::Instant::now(),
+            visited: 0,
+            max_paths: 8,
+            ..ObservationBudget::new()
+        };
+        let mut entries = Vec::new();
+        let result = svc.inventory(
+            root.to_str().unwrap(),
+            &mut entries,
+            &mut HashMap::new(),
+            &Cancellation::default(),
+            Some(&mut budget),
+        );
+        assert_eq!(result.err().unwrap().reason, "Manual.ObservationLimit");
+        assert!(entries.len() <= 8);
+        assert!(budget.visited <= 8);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 12);
+    }
+
+    #[test]
+    fn taskowned_multiple_roots_share_one_native_inventory_budget() {
+        let (tree, svc) = service_fixture();
+        let mut budget = ObservationBudget {
+            started: std::time::Instant::now(),
+            visited: 0,
+            max_paths: 3,
+            ..ObservationBudget::new()
+        };
+        let mut entries = Vec::new();
+        for name in ["first", "second"] {
+            let root = tree.path().join(name);
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("file"), b"fixture").unwrap();
+            let result = svc.inventory(
+                root.to_str().unwrap(),
+                &mut entries,
+                &mut HashMap::new(),
+                &Cancellation::default(),
+                Some(&mut budget),
+            );
+            if name == "first" {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.err().unwrap().reason, "Manual.ObservationLimit");
+            }
+        }
+        assert!(entries.len() <= 3);
+        assert!(budget.visited <= 3);
+    }
+
+    #[test]
+    fn resident_reservation_rejects_overflow_without_changing_accounting() {
+        let mut budget = ObservationBudget {
+            bytes: 63,
+            max_bytes: 64,
+            ..ObservationBudget::new()
+        };
+        assert_eq!(
+            budget
+                .reserve_path(r"E:\fixture", 10, &Cancellation::default())
+                .err()
+                .unwrap()
+                .reason,
+            "Manual.ObservationLimit"
+        );
+        assert_eq!(budget.bytes, 63);
+        let huge_root = usize::MAX;
+        assert_eq!(
+            budget
+                .reserve_path(r"E:\fixture", huge_root, &Cancellation::default())
+                .err()
+                .unwrap()
+                .reason,
+            "Manual.ObservationLimit"
+        );
+        assert_eq!(budget.bytes, 63);
+    }
+
+    #[test]
+    fn selected_input_bytes_and_depth_are_bounded_before_normalization() {
+        let mut budget = ObservationBudget::new();
+        let selected = vec![format!("E:\\{}", "a".repeat(600)); 1800];
+        assert_eq!(
+            budget
+                .reserve_input(&selected, &Cancellation::default())
+                .err()
+                .unwrap()
+                .reason,
+            "Manual.ObservationLimit"
+        );
+        assert_eq!(budget.bytes, 0);
+        let deep = vec![format!("E:\\{}", vec!["a"; 65].join("\\"))];
+        assert_eq!(
+            budget
+                .reserve_input(&deep, &Cancellation::default())
+                .err()
+                .unwrap()
+                .reason,
+            "Manual.ObservationLimit"
+        );
+        assert_eq!(budget.bytes, 0);
+    }
+
+    #[test]
+    fn taskowned_native_inventory_stops_before_first_allocation_when_bytes_are_exhausted() {
+        let (tree, svc) = service_fixture();
+        let file = tree.path().join("selected");
+        fs::write(&file, b"fixture").unwrap();
+        let mut budget = ObservationBudget {
+            max_bytes: 1,
+            ..ObservationBudget::new()
+        };
+        let mut entries = Vec::new();
+        let mut ancestors = HashMap::new();
+        let error = svc
+            .inventory(
+                file.to_str().unwrap(),
+                &mut entries,
+                &mut ancestors,
+                &Cancellation::default(),
+                Some(&mut budget),
+            )
+            .err()
+            .unwrap();
+        assert_eq!(error.reason, "Manual.ObservationLimit");
+        assert!(entries.is_empty());
+        assert!(ancestors.is_empty());
+        assert_eq!(budget.visited, 0);
+        assert_eq!(budget.bytes, 0);
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn taskowned_native_queue_reserves_resident_bytes_before_growth() {
+        let (tree, svc) = service_fixture();
+        let root = tree.path().join("selected");
+        fs::create_dir(&root).unwrap();
+        for n in 0..12 {
+            fs::write(
+                root.join(format!("wide-name-{}-{n}", "a".repeat(150))),
+                b"fixture",
+            )
+            .unwrap();
+        }
+        let mut budget = ObservationBudget {
+            max_bytes: 32_768,
+            ..ObservationBudget::new()
+        };
+        let mut entries = Vec::new();
+        let error = svc
+            .inventory(
+                root.to_str().unwrap(),
+                &mut entries,
+                &mut HashMap::new(),
+                &Cancellation::default(),
+                Some(&mut budget),
+            )
+            .err()
+            .unwrap();
+        assert_eq!(error.reason, "Manual.ObservationLimit");
+        assert_eq!(budget.visited, 1);
+        assert!(budget.bytes <= 32_768);
+        assert!(entries.is_empty());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 12);
+    }
 }

@@ -81,6 +81,28 @@ pub fn app_data_directory() -> anyhow::Result<PathBuf> {
     }
     Ok(PathBuf::from(value).join("DiskBurrow"))
 }
+/// The verification route stays isolated and requires its original explicit arguments.
+pub fn validate_verification_launch(
+    args: &[String],
+    options: &crate::cli::Cli,
+) -> anyhow::Result<()> {
+    if options.verification.is_none() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        options.data_dir.is_some(),
+        "Runtime verification requires an explicit --data-dir"
+    );
+    anyhow::ensure!(
+        options.launch.root.is_some()
+            && args
+                .iter()
+                .take_while(|arg| arg.as_str() != "--")
+                .any(|arg| arg == "--scan-root"),
+        "Runtime verification requires an explicit --scan-root"
+    );
+    Ok(())
+}
 pub fn system_root() -> String {
     let known = WindowsRuleEnvironment.known_directories();
     normalize_local_path(&known.windows)
@@ -97,35 +119,53 @@ pub fn is_local_path(path: &str) -> bool {
 fn local_directory_handles(
     path: &str,
 ) -> io::Result<(String, Vec<diskburrow_windows::NativeHandle>)> {
-    let path = normalize_local_path(path).ok_or_else(|| io::Error::other("Unsafe local path"))?;
+    local_directory_handles_checked(path, &WindowsNativeFileApi, &mut || Ok(()))
+}
+pub(crate) fn local_directory_handles_checked(
+    path: &str,
+    api: &dyn NativeFileApi,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<(String, Vec<diskburrow_windows::NativeHandle>)> {
+    checkpoint()?;
+    crate::cli::validate_absolute_root(path)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    let path = path.to_owned();
     if !WindowsRuleEnvironment.is_local_path(&path) {
         return Err(io::Error::other("Non-local volume"));
     }
+    checkpoint()?;
     // Pin each directory before resolving its child; cloud/reparse points are never followed.
-    let mut chain = Vec::new();
-    let mut p = PathBuf::from(&path);
-    loop {
-        chain.push(p.clone());
-        if !p.pop() {
-            break;
-        }
-    }
-    chain.reverse();
-    let api = WindowsNativeFileApi;
+    let mut current = String::with_capacity(path.len());
+    current.push_str(&path[..3]);
     let mut handles = Vec::new();
     let mut volume = None;
-    for p in chain {
-        let p = p.to_string_lossy();
-        let h = api.open_directory(&p)?;
-        let o = api.inspect_handle(&h, &p)?;
+    for component in std::iter::once(None).chain(
+        path[3..]
+            .split('\\')
+            .filter(|part| !part.is_empty())
+            .map(Some),
+    ) {
+        // The previous ancestor is pinned before this child path is constructed.
+        if let Some(component) = component {
+            if !current.ends_with('\\') {
+                current.push('\\');
+            }
+            current.push_str(component);
+        }
+        checkpoint()?;
+        let h = api.open_directory(&current)?;
+        checkpoint()?;
+        let o = api.inspect_handle(&h, &current)?;
+        checkpoint()?;
         let final_path = api.final_path(&h)?;
+        checkpoint()?;
         let id = o
             .identity
             .ok_or_else(|| io::Error::other("Directory identity unavailable"))?;
         if o.attributes & (FILE_ATTRIBUTE_REPARSE_POINT) != 0
             || o.attributes & FILE_ATTRIBUTE_DIRECTORY == 0
             || is_cloud(o.attributes)
-            || !equals_path(&p, &final_path)
+            || !equals_path(&current, &final_path)
             || volume.is_some_and(|v| v != id.volume)
         {
             return Err(io::Error::other("Unsafe local directory"));
@@ -136,7 +176,14 @@ fn local_directory_handles(
     Ok((path, handles))
 }
 pub fn volume_space(path: &str) -> anyhow::Result<VolumeSpace> {
-    let (path, _pinned) = local_directory_handles(path)?;
+    volume_space_checked(path, &mut || Ok(()))
+}
+pub(crate) fn volume_space_checked(
+    path: &str,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> anyhow::Result<VolumeSpace> {
+    let (path, _pinned) = local_directory_handles_checked(path, &WindowsNativeFileApi, checkpoint)?;
+    checkpoint()?;
     let p = wide(&path);
     let mut available = 0u64;
     let mut total = 0u64;
@@ -144,6 +191,7 @@ pub fn volume_space(path: &str) -> anyhow::Result<VolumeSpace> {
     if unsafe { GetDiskFreeSpaceExW(p.as_ptr(), &mut available, &mut total, &mut free) } == 0 {
         return Err(io::Error::last_os_error().into());
     }
+    checkpoint()?;
     Ok(VolumeSpace {
         total_bytes: i64::try_from(total)?,
         free_bytes: i64::try_from(available.min(total))?,
@@ -421,11 +469,34 @@ pub struct PlatformBridge {
     activation: Arc<OwnedHandle>,
     tray: Option<tray::TrayThread>,
     primary: bool,
+    launch: Option<crate::launch_ipc::Server>,
 }
 impl PlatformBridge {
     pub fn start(sender: Sender<PlatformEvent>) -> anyhow::Result<Self> {
         let sid = user_sid()?;
-        let name = format!("Global\\DiskBurrow-Rust-{sid}");
+        Self::start_named(sender, None, &format!("DiskBurrow-Rust-{sid}"))
+    }
+    pub fn start_with_launch(
+        sender: Sender<PlatformEvent>,
+        payload: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let sid = user_sid()?;
+        Self::start_named(sender, payload, &format!("DiskBurrow-Rust-{sid}"))
+    }
+    fn start_named(
+        sender: Sender<PlatformEvent>,
+        payload: Option<&str>,
+        namespace: &str,
+    ) -> anyhow::Result<Self> {
+        if let Some(payload) = payload {
+            anyhow::ensure!(
+                payload.len() <= crate::launch_ipc::MAX_PAYLOAD_BYTES,
+                "Launch payload is too large"
+            );
+            let launch: crate::cli::LaunchOverrides = serde_json::from_str(payload)?;
+            launch.validate()?;
+        }
+        let name = format!("Global\\{namespace}");
         let activation = Arc::new(OwnedHandle::event(Some(&format!("{name}.Activate")))?);
         let mutex_name = wide(&name);
         let h = unsafe { CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr()) };
@@ -434,6 +505,14 @@ impl PlatformBridge {
         }
         let primary = unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
         let instance = OwnedHandle(h);
+        let launch = if primary {
+            Some(crate::launch_ipc::Server::start(namespace)?)
+        } else {
+            if let Some(payload) = payload {
+                crate::launch_ipc::forward(namespace, payload)?;
+            }
+            None
+        };
         let tray = if primary {
             Some(tray::TrayThread::start(sender, activation.clone())?)
         } else {
@@ -447,10 +526,16 @@ impl PlatformBridge {
             activation,
             tray,
             primary,
+            launch,
         })
     }
     pub fn is_primary(&self) -> bool {
         self.primary
+    }
+    pub fn try_recv_launch(&self) -> Option<String> {
+        self.launch
+            .as_ref()
+            .and_then(crate::launch_ipc::Server::try_recv)
     }
     pub fn update(&self, language: &str, paused: bool) {
         if let Some(t) = &self.tray {
@@ -470,9 +555,46 @@ impl PlatformBridge {
 }
 impl Drop for PlatformBridge {
     fn drop(&mut self) {
+        // Release the pipe before the instance mutex permits a new primary.
+        self.launch.take();
         self.tray.take();
         let _ = &self.instance;
         let _ = &self.activation;
+    }
+}
+
+/// Borrow the launching terminal's console without creating a desktop console window.
+pub struct ParentConsole(bool);
+impl ParentConsole {
+    pub fn attach() -> Self {
+        use windows_sys::Win32::System::Console::{
+            ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
+        };
+        let stdout = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        // Preserve inherited redirected handles: AttachConsole may replace them.
+        if !stdout.is_null() && stdout != INVALID_HANDLE_VALUE {
+            return Self(false);
+        }
+        Self(unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } != 0)
+    }
+}
+pub fn print_usage(usage: &str) -> io::Result<()> {
+    use std::io::Write as _;
+    let _console = ParentConsole::attach();
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "{usage}")?;
+    stdout.flush()
+}
+impl Drop for ParentConsole {
+    fn drop(&mut self) {
+        if self.0 {
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            unsafe {
+                windows_sys::Win32::System::Console::FreeConsole();
+            }
+        }
     }
 }
 pub(crate) fn user_sid() -> io::Result<String> {
@@ -619,10 +741,117 @@ pub fn hide_own_window(handle: isize) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    #[test]
+    fn invalid_deep_and_unnormalized_roots_fail_before_native_metadata() {
+        let fixture = tempfile::tempdir().unwrap();
+        let missing = fixture.path().join("missing").to_str().unwrap().to_owned();
+        assert!(!Path::new(&missing).exists());
+        let deep = format!("{missing}\\{}", vec!["a"; 64].join("\\"));
+        let oversized = format!("E:\\{}", "界".repeat(5461));
+        for path in [
+            &deep,
+            &oversized,
+            r"E:\NUL",
+            r"E:\..\outside",
+            r"e:/outside",
+            r"\\server\share",
+        ] {
+            let result = local_directory_handles(path);
+            assert!(
+                matches!(result, Err(ref error) if error.kind() == io::ErrorKind::InvalidInput),
+                "{path:?}"
+            );
+        }
+        let error = local_directory_handles(&missing).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        let (path, handles) = local_directory_handles(fixture.path().to_str().unwrap()).unwrap();
+        assert_eq!(path, fixture.path().to_str().unwrap());
+        assert!(!handles.is_empty() && handles.len() <= 65);
+    }
     #[derive(Default)]
     struct MemoryRegistry {
         value: RefCell<Option<String>>,
         writes: RefCell<usize>,
+    }
+    #[test]
+    fn verification_requires_real_scan_root_option_before_separator_and_explicit_data() {
+        let report = r"E:\owned-proof.json";
+        for values in [
+            vec![
+                "--verify-runtime",
+                report,
+                "--scan-root",
+                r"E:\owned-fixture",
+            ],
+            vec![
+                "--verify-runtime",
+                report,
+                "--data-dir",
+                r"E:\owned-settings",
+                r"E:\owned-fixture",
+            ],
+            vec![
+                "--verify-runtime",
+                report,
+                "--data-dir",
+                r"E:\owned-settings",
+                "--",
+                "--scan-root",
+            ],
+        ] {
+            let args: Vec<String> = values.iter().map(|value| (*value).to_owned()).collect();
+            let options = crate::cli::parse(&args).unwrap();
+            assert!(
+                validate_verification_launch(&args, &options).is_err(),
+                "accepted {values:?}"
+            );
+        }
+        let args: Vec<String> = [
+            "--verify-runtime",
+            report,
+            "--data-dir",
+            r"E:\owned-settings",
+            "--scan-root",
+            r"E:\owned-fixture",
+        ]
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect();
+        validate_verification_launch(&args, &crate::cli::parse(&args).unwrap()).unwrap();
+        let args = vec![r"E:\ordinary-fixture".to_owned()];
+        validate_verification_launch(&args, &crate::cli::parse(&args).unwrap()).unwrap();
+    }
+    #[test]
+    fn second_owned_native_launch_reaches_primary_before_secondary_returns() {
+        let namespace = format!("DiskBurrow-Bridge-Fixture-{}", unsafe {
+            GetCurrentProcessId()
+        });
+        let (primary_tx, _primary_rx) = std::sync::mpsc::channel();
+        let primary = PlatformBridge::start_named(primary_tx, None, &namespace).unwrap();
+        assert!(primary.is_primary());
+        let payload = r#"{"root":"E:\\owned-fixture","depth":6}"#;
+        let (secondary_tx, _secondary_rx) = std::sync::mpsc::channel();
+        let secondary =
+            PlatformBridge::start_named(secondary_tx, Some(payload), &namespace).unwrap();
+        assert!(!secondary.is_primary());
+        assert_eq!(primary.try_recv_launch().as_deref(), Some(payload));
+        assert!(primary.try_recv_launch().is_none());
+        drop(secondary);
+        drop(primary);
+        let (next_tx, _next_rx) = std::sync::mpsc::channel();
+        let next = PlatformBridge::start_named(next_tx, None, &namespace).unwrap();
+        assert!(next.is_primary());
+    }
+    #[test]
+    fn invalid_launch_authority_and_unresolved_paths_never_open_bridge() {
+        for payload in [
+            r#"{"command":"delete"}"#,
+            r#"{"root":"relative"}"#,
+            r#"{"data_dir":"E:\\settings"}"#,
+        ] {
+            let (sender, _receiver) = std::sync::mpsc::channel();
+            assert!(PlatformBridge::start_with_launch(sender, Some(payload)).is_err());
+        }
     }
     impl RunRegistry for MemoryRegistry {
         fn read(&self) -> io::Result<Option<String>> {

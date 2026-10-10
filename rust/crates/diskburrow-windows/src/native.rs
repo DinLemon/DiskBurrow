@@ -211,6 +211,14 @@ pub(crate) struct AncestorLease<'a> {
 }
 impl<'a> AncestorLease<'a> {
     pub fn open(api: &'a dyn NativeFileApi, path: &str) -> io::Result<Self> {
+        Self::open_checked(api, path, &mut || Ok(()))
+    }
+    /// Check between native calls; a checkpoint's typed policy error is preserved.
+    pub fn open_checked<E: From<io::Error>>(
+        api: &'a dyn NativeFileApi,
+        path: &str,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, E> {
         let parent =
             crate::paths::parent(path).ok_or_else(|| io::Error::other("Unsafe ancestor"))?;
         let mut lease = Self {
@@ -218,9 +226,11 @@ impl<'a> AncestorLease<'a> {
             pinned: Vec::new(),
         };
         for p in crate::paths::chain(&parent) {
+            checkpoint()?;
             let h = api.open_directory(&p)?;
+            checkpoint()?;
             let o = api.inspect_handle(&h, &p)?;
-            validate_directory(api, &p, &h, &o)?;
+            validate_directory_checked(api, &p, &h, &o, checkpoint)?;
             let identity = o
                 .identity
                 .ok_or_else(|| io::Error::other("Identity unavailable"))?;
@@ -229,7 +239,7 @@ impl<'a> AncestorLease<'a> {
                 .first()
                 .is_some_and(|(_, _, id)| id.volume != identity.volume)
             {
-                return Err(io::Error::other("Volume changed"));
+                return Err(io::Error::other("Volume changed").into());
             }
             lease.pinned.push((p, h, identity));
         }
@@ -242,11 +252,18 @@ impl<'a> AncestorLease<'a> {
         self.pinned[0].2.volume
     }
     pub fn verify(&self) -> io::Result<()> {
+        self.verify_checked(&mut || Ok(()))
+    }
+    pub fn verify_checked<E: From<io::Error>>(
+        &self,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<(), E> {
         for (p, h, id) in &self.pinned {
+            checkpoint()?;
             let observed = self.api.inspect_handle(h, p)?;
-            validate_directory(self.api, p, h, &observed)?;
+            validate_directory_checked(self.api, p, h, &observed, checkpoint)?;
             if observed.identity.as_ref() != Some(id) {
-                return Err(io::Error::other("Ancestor changed"));
+                return Err(io::Error::other("Ancestor changed").into());
             }
         }
         Ok(())
@@ -258,14 +275,25 @@ pub(crate) fn validate_directory(
     h: &NativeHandle,
     o: &FileObservation,
 ) -> io::Result<()> {
+    validate_directory_checked(api, path, h, o, &mut || Ok(()))
+}
+fn validate_directory_checked<E: From<io::Error>>(
+    api: &dyn NativeFileApi,
+    path: &str,
+    h: &NativeHandle,
+    o: &FileObservation,
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<(), E> {
     if o.identity.is_none()
         || o.attributes & DIRECTORY == 0
         || o.attributes & REPARSE != 0
         || is_cloud(o.attributes)
-        || crate::paths::canonical(&api.final_path(h)?)
-            .is_none_or(|p| !crate::equals_path(path, &p))
     {
-        Err(io::Error::other("Unsafe ancestor"))
+        return Err(io::Error::other("Unsafe ancestor").into());
+    }
+    checkpoint()?;
+    if crate::paths::canonical(&api.final_path(h)?).is_none_or(|p| !crate::equals_path(path, &p)) {
+        Err(io::Error::other("Unsafe ancestor").into())
     } else {
         Ok(())
     }

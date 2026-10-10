@@ -1,5 +1,115 @@
 use crate::contract::Row;
+use crate::git_inspection::{GitInspection, GitUncertainty, RepositoryState};
+use crate::locale::{gb, text};
+use diskburrow_engine::{
+    Category, EntryClassification, LiveIndex, Reclaim, Recommendation, RecommendationReason,
+};
 use diskburrow_services::DirectoryObservation;
+
+pub fn category_key(category: u8) -> &'static str {
+    match category {
+        0 => "Category.Code",
+        1 => "Category.AgentScratch",
+        2 => "Category.Toolchain",
+        3 => "Category.Synced",
+        4 => "Category.Git",
+        5 => "Category.Media",
+        6 => "Category.Documents",
+        7 => "Category.Cache",
+        _ => "Category.Other",
+    }
+}
+pub fn reclaim_key(reclaim: Reclaim) -> &'static str {
+    match reclaim {
+        Reclaim::Regenerable => "Reclaim.Regenerable",
+        Reclaim::SyncHistory => "Reclaim.SyncHistory",
+        Reclaim::PackageStore => "Reclaim.PackageStore",
+        Reclaim::BuildOutput => "Reclaim.BuildOutput",
+        Reclaim::Reinstallable => "Reclaim.Reinstallable",
+        Reclaim::SandboxLayers => "Reclaim.SandboxLayers",
+        Reclaim::Snapshots => "Reclaim.Snapshots",
+        Reclaim::Trash => "Reclaim.Trash",
+        Reclaim::Temporary => "Reclaim.Temporary",
+    }
+}
+pub fn insights(
+    index: &LiveIndex,
+    classifications: &[EntryClassification],
+    items: &[Recommendation],
+    language: &str,
+) -> Vec<Row> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let class = classifications.get(item.index)?;
+            let mut reason = match item.reason {
+                RecommendationReason::Reclaimable(reclaim) => text(language, reclaim_key(reclaim)),
+                RecommendationReason::Worktrees { count, oldest_days } => format!(
+                    "{}: {count}, {oldest_days} {}",
+                    text(language, "Insights.Worktrees"),
+                    text(language, "Insights.Days")
+                ),
+                RecommendationReason::StaleExperiment { age_days } => format!(
+                    "{}: {age_days} {}",
+                    text(language, "Insights.Stale"),
+                    text(language, "Insights.Days")
+                ),
+            };
+            if !item.coverage_complete || !item.allocation_complete {
+                reason.push_str(&format!(" · {}", text(language, "Insights.Coverage")));
+            }
+            Some(Row {
+                key: item.index.to_string(),
+                path: index.path(item.index),
+                cells: vec![
+                    text(language, category_key(class.category as u8)),
+                    reason,
+                    gb(item.known_allocated_bytes, language),
+                ],
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+pub fn git_summary(inspection: &GitInspection, language: &str) -> String {
+    if inspection.repository == RepositoryState::NotRepository {
+        return text(language, "Git.NotRepository");
+    }
+    let count = |n: Option<u64>| n.map_or_else(|| text(language, "Unknown"), |n| n.to_string());
+    let mut summary = if inspection.repository == RepositoryState::Repository {
+        format!(
+            "Git: {} {} · {} {} · {} {} · {} {}",
+            count(inspection.changed),
+            text(language, "Git.Changed"),
+            count(inspection.untracked),
+            text(language, "Git.Untracked"),
+            count(inspection.stash),
+            text(language, "Git.Stash"),
+            count(inspection.ahead),
+            text(language, "Git.Ahead")
+        )
+    } else {
+        text(language, "Git.Unknown")
+    };
+    if let Some(reason) = inspection.uncertainty {
+        let key = match reason {
+            GitUncertainty::GitUnavailable => "Git.Unavailable",
+            GitUncertainty::UnsafeConfiguration => "Git.Unsafe",
+            GitUncertainty::CommandFailed => "Git.Failed",
+            GitUncertainty::TimedOut => "Git.Timeout",
+            GitUncertainty::OutputLimit => "Git.OutputLimit",
+            GitUncertainty::Cancelled => "Git.Cancelled",
+            GitUncertainty::NoUpstream => "Git.NoUpstream",
+            GitUncertainty::DetachedHead => "Git.Detached",
+            GitUncertainty::UnsupportedRepository => "Git.Unsupported",
+        };
+        summary.push_str(&format!(" · {}", text(language, key)));
+    }
+    summary
+}
+pub fn legend() -> impl Iterator<Item = u8> {
+    Category::LEGEND.into_iter().map(|category| category as u8)
+}
 
 #[cfg(test)]
 pub fn target(index: usize) -> Option<&'static str> {

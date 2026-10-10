@@ -304,6 +304,7 @@ fn taskowned_late_child_and_partial_cancellation_survive() {
         .unwrap();
     let report = svc.execute_manual(plan.id, true, &stopped).unwrap();
     assert!(report.was_cancelled);
+    assert!(report.free_space_delta_available);
     assert_eq!(plan.entries.len(), report.items.len());
     assert!(
         report
@@ -817,6 +818,7 @@ fn taskowned_manual_review_is_readonly_deduplicated_singleuse_and_neighbours_sur
     assert!(svc.execute_manual(plan.id, false, &cancel).is_err());
     let report = svc.execute_manual(plan.id, true, &cancel).unwrap();
     assert_eq!(3, report.items.len());
+    assert!(report.free_space_delta_available);
     assert!(
         report
             .items
@@ -903,6 +905,7 @@ fn taskowned_precancelled_execution_audits_every_item() {
     let report = svc.execute_manual(plan.id, true, &cancel).unwrap();
     assert!(report.was_cancelled);
     assert_eq!(plan.entries.len(), report.items.len());
+    assert!(report.free_space_delta_available);
     assert!(report.items.iter().all(|x| x.audit.is_some()));
     assert!(std::path::Path::new(&file).exists());
 }
@@ -919,6 +922,34 @@ fn taskowned_metadata_has_stable_identity_and_hardlink_allocation() {
     assert_eq!(2, a.link_count);
     assert_eq!(17, a.logical_bytes);
     assert!(a.allocated_bytes.is_some());
+}
+
+#[test]
+fn taskowned_reclaim_excludes_complete_and_external_native_hardlinks_without_overlap() {
+    let f = Fixture::new();
+    let selected = f.file(r"selected\file");
+    fs::write(&selected, vec![5u8; 65_536]).unwrap();
+    let internal = f.path(r"selected\alias");
+    fs::hard_link(&selected, &internal).unwrap();
+    let svc = f.service();
+    let cancel = Cancellation::default();
+    let plan = svc
+        .preview_manual(&[f.path("selected"), internal], &cancel)
+        .unwrap();
+    let observation = inspect(&selected).unwrap();
+    assert!(observation.allocated_bytes.unwrap() > 0);
+    let volume = observation.identity.unwrap().volume;
+    let estimate = project_manual_reclaim(&plan, volume);
+    assert_eq!(estimate.known_reclaim_bytes, 0);
+    assert_eq!(estimate.reclaimable_files, 0);
+    assert_eq!(estimate.excluded_hardlink_files, 1);
+    let outside = f.path("outside-alias");
+    fs::hard_link(&selected, &outside).unwrap();
+    let plan = svc.preview_manual(&[f.path("selected")], &cancel).unwrap();
+    let estimate = project_manual_reclaim(&plan, volume);
+    assert_eq!(estimate.known_reclaim_bytes, 0);
+    assert_eq!(estimate.excluded_hardlink_files, 1);
+    assert!(std::path::Path::new(&outside).exists());
 }
 
 #[test]
@@ -978,4 +1009,410 @@ fn taskowned_cleanup_age_browser_scope_and_selected_ids() {
     assert!(matches!(report.items[0].outcome, CleanupOutcome::Deleted));
     assert!(std::path::Path::new(&cookies).exists());
     assert!(std::path::Path::new(&txt).exists());
+}
+
+#[test]
+fn taskowned_manual_observer_preserves_issued_preview_and_cannot_authorize_deletion() {
+    let f = Fixture::new();
+    let reviewed = f.file("reviewed");
+    let observed = f.file("observed");
+    let svc = f.service();
+    let cancel = Cancellation::default();
+    let issued = svc
+        .preview_manual(std::slice::from_ref(&reviewed), &cancel)
+        .unwrap();
+    let observation = svc
+        .observe_manual(std::slice::from_ref(&observed), &cancel)
+        .unwrap();
+    assert_eq!(observation.file_count(), 1);
+    assert_ne!(observation.id, issued.id);
+    let error = svc
+        .execute_manual(observation.id, true, &cancel)
+        .unwrap_err();
+    assert!(error.to_string().contains("Manual.PlanUnavailable"));
+    assert!(std::path::Path::new(&observed).exists());
+    let report = svc.execute_manual(issued.id, true, &cancel).unwrap();
+    assert!(
+        report
+            .items
+            .iter()
+            .all(|item| item.outcome == CleanupOutcome::Deleted)
+    );
+    assert!(!std::path::Path::new(&reviewed).exists());
+    assert!(std::path::Path::new(&observed).exists());
+}
+
+#[test]
+fn taskowned_cancelled_manual_observer_preserves_issued_preview() {
+    let f = Fixture::new();
+    let file = f.file("reviewed");
+    let svc = f.service();
+    let cancel = Cancellation::default();
+    let issued = svc
+        .preview_manual(std::slice::from_ref(&file), &cancel)
+        .unwrap();
+    let stopped = Cancellation::default();
+    stopped.cancel();
+    assert!(
+        svc.observe_manual(std::slice::from_ref(&file), &stopped)
+            .is_err()
+    );
+    let report = svc.execute_manual(issued.id, true, &cancel).unwrap();
+    assert!(
+        report
+            .items
+            .iter()
+            .all(|item| item.outcome == CleanupOutcome::Deleted)
+    );
+    assert!(!std::path::Path::new(&file).exists());
+}
+
+#[test]
+fn taskowned_manual_observer_caps_input_roots_without_opening_metadata() {
+    let f = Fixture::new();
+    let file = f.file("observed");
+    let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = opened.clone();
+    let svc = f.hooked(Hooks {
+        after_inspect: Some(Box::new(move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })),
+        ..Hooks::default()
+    });
+    let plan = svc
+        .observe_manual(&vec![file.clone(); 2001], &Cancellation::default())
+        .unwrap();
+    assert!(plan.roots.is_empty());
+    assert!(plan.entries.is_empty());
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|warning| warning.reason_key == "Manual.ObservationLimit")
+    );
+    assert_eq!(opened.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert!(std::path::Path::new(&file).exists());
+}
+
+#[test]
+fn taskowned_manual_observer_cancels_during_directory_enumeration() {
+    let f = Fixture::new();
+    for n in 0..12 {
+        f.file(&format!("observed\\file-{n}"));
+    }
+    let root = f.path("observed");
+    let cancel = Cancellation::default();
+    let signal = cancel.clone();
+    let watched = root.clone();
+    let svc = f.hooked(Hooks {
+        after_inspect: Some(Box::new(move |path| {
+            if equals_path(path, &watched) {
+                signal.cancel();
+            }
+        })),
+        ..Hooks::default()
+    });
+    assert!(svc.observe_manual(&[root], &cancel).is_err());
+    assert!(std::path::Path::new(&f.path("observed\\file-11")).exists());
+}
+
+#[test]
+fn taskowned_manual_observer_rejects_long_or_deep_roots_before_native_metadata() {
+    let f = Fixture::new();
+    let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = opened.clone();
+    let svc = f.hooked(Hooks {
+        after_inspect: Some(Box::new(move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })),
+        ..Hooks::default()
+    });
+    for root in [
+        f.path(&"a".repeat(16_385)),
+        f.path(&vec!["a"; 65].join("\\")),
+    ] {
+        let plan = svc
+            .observe_manual(&[root], &Cancellation::default())
+            .unwrap();
+        assert!(plan.roots.is_empty());
+        assert!(plan.entries.is_empty());
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.reason_key == "Manual.ObservationLimit")
+        );
+    }
+    assert_eq!(opened.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ObservationCheckpointTrigger {
+    AncestorOpen,
+    DeepAncestorOpen,
+    AncestorInspect,
+    AncestorFinalPath,
+    TargetMetadata,
+    TargetInspect,
+    TargetDirectoryOpen,
+    TargetFinalPath,
+    VerifyInspect,
+}
+struct ObservationCheckpointApi {
+    watched: String,
+    trigger: ObservationCheckpointTrigger,
+    cancel: Cancellation,
+    delay: std::time::Duration,
+    ancestor_open_count: std::sync::atomic::AtomicUsize,
+    fired: std::sync::atomic::AtomicBool,
+    target_seen: std::sync::atomic::AtomicBool,
+    calls_after_trigger: std::sync::atomic::AtomicUsize,
+}
+impl ObservationCheckpointApi {
+    fn before_call(&self) {
+        if self.fired.load(std::sync::atomic::Ordering::Acquire) {
+            self.calls_after_trigger
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    fn after_call(&self, event: &str, target: bool) {
+        use ObservationCheckpointTrigger as Trigger;
+        if event == "directory" && !target {
+            self.ancestor_open_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let fire = match self.trigger {
+            Trigger::AncestorOpen => event == "directory" && !target,
+            Trigger::DeepAncestorOpen => {
+                event == "directory"
+                    && !target
+                    && self
+                        .ancestor_open_count
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        == 3
+            }
+            Trigger::AncestorInspect => event == "inspect" && !target,
+            Trigger::AncestorFinalPath => event == "final" && !target,
+            Trigger::TargetMetadata => event == "metadata" && target,
+            Trigger::TargetInspect => event == "inspect" && target,
+            Trigger::TargetDirectoryOpen => event == "directory" && target,
+            Trigger::TargetFinalPath => event == "final" && target,
+            Trigger::VerifyInspect => {
+                event == "inspect"
+                    && !target
+                    && self.target_seen.load(std::sync::atomic::Ordering::Acquire)
+            }
+        };
+        if event == "inspect" && target {
+            self.target_seen
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        if fire && !self.fired.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            if !self.delay.is_zero() {
+                std::thread::sleep(self.delay);
+            } else {
+                self.cancel.cancel();
+            }
+        }
+    }
+}
+impl NativeFileApi for ObservationCheckpointApi {
+    fn open_directory(&self, path: &str) -> std::io::Result<NativeHandle> {
+        self.before_call();
+        let handle = WindowsNativeFileApi.open_directory(path)?;
+        self.after_call("directory", equals_path(path, &self.watched));
+        Ok(handle)
+    }
+    fn open_metadata(&self, path: &str) -> std::io::Result<NativeHandle> {
+        self.before_call();
+        let handle = WindowsNativeFileApi.open_metadata(path)?;
+        self.after_call("metadata", equals_path(path, &self.watched));
+        Ok(handle)
+    }
+    fn inspect_handle(
+        &self,
+        handle: &NativeHandle,
+        path: &str,
+    ) -> std::io::Result<NativeFileObservation> {
+        self.before_call();
+        let observation = WindowsNativeFileApi.inspect_handle(handle, path)?;
+        self.after_call("inspect", equals_path(path, &self.watched));
+        Ok(observation)
+    }
+    fn final_path(&self, handle: &NativeHandle) -> std::io::Result<String> {
+        self.before_call();
+        let path = WindowsNativeFileApi.final_path(handle)?;
+        self.after_call("final", equals_path(&path, &self.watched));
+        Ok(path)
+    }
+}
+fn checkpoint_observer(fixture: &Fixture, api: Arc<ObservationCheckpointApi>) -> CleanupService {
+    CleanupService::with_native_api(
+        Arc::new(FixedRuleEnvironment {
+            known: fixture.known.clone(),
+            owner_state: OwnerProcessState::Closed,
+        }),
+        fixture.path("application"),
+        fixture.path("data"),
+        api,
+    )
+}
+fn checkpoint_api(
+    path: String,
+    trigger: ObservationCheckpointTrigger,
+    delay: bool,
+) -> Arc<ObservationCheckpointApi> {
+    Arc::new(ObservationCheckpointApi {
+        watched: path,
+        trigger,
+        delay: if delay {
+            std::time::Duration::from_millis(3100)
+        } else {
+            std::time::Duration::ZERO
+        },
+        ancestor_open_count: std::sync::atomic::AtomicUsize::new(0),
+        cancel: Cancellation::default(),
+        fired: std::sync::atomic::AtomicBool::new(false),
+        target_seen: std::sync::atomic::AtomicBool::new(false),
+        calls_after_trigger: std::sync::atomic::AtomicUsize::new(0),
+    })
+}
+#[test]
+fn taskowned_observer_checks_cancellation_before_every_next_native_call() {
+    use ObservationCheckpointTrigger as Trigger;
+    let fixture = Fixture::new();
+    fixture.file("observed\\child");
+    let root = fixture.path("observed");
+    for trigger in [
+        Trigger::AncestorOpen,
+        Trigger::AncestorInspect,
+        Trigger::AncestorFinalPath,
+        Trigger::TargetMetadata,
+        Trigger::TargetInspect,
+        Trigger::TargetDirectoryOpen,
+        Trigger::TargetFinalPath,
+        Trigger::VerifyInspect,
+    ] {
+        let api = checkpoint_api(root.clone(), trigger, false);
+        let observer = checkpoint_observer(&fixture, api.clone());
+        let error = observer
+            .observe_manual(std::slice::from_ref(&root), &api.cancel)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Cleanup.Cancelled"),
+            "{trigger:?}: {error}"
+        );
+        assert!(
+            api.fired.load(std::sync::atomic::Ordering::Acquire),
+            "{trigger:?}"
+        );
+        assert_eq!(
+            api.calls_after_trigger
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "{trigger:?}: cancellation must stop before the next native call"
+        );
+    }
+    assert!(std::path::Path::new(&fixture.path("observed\\child")).exists());
+}
+#[test]
+fn taskowned_observer_checks_deadline_after_native_open_before_next_inspect() {
+    let fixture = Fixture::new();
+    let file = fixture.file("observed");
+    for trigger in [
+        ObservationCheckpointTrigger::AncestorOpen,
+        ObservationCheckpointTrigger::TargetMetadata,
+    ] {
+        let api = checkpoint_api(file.clone(), trigger, true);
+        let observer = checkpoint_observer(&fixture, api.clone());
+        let plan = observer
+            .observe_manual(std::slice::from_ref(&file), &api.cancel)
+            .unwrap();
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.reason_key == "Manual.ObservationLimit"),
+            "{trigger:?}"
+        );
+        assert!(plan.entries.is_empty());
+        assert!(api.fired.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            api.calls_after_trigger
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "{trigger:?}: expired deadline must stop before the next native call"
+        );
+    }
+    assert!(std::path::Path::new(&file).exists());
+}
+
+#[test]
+fn taskowned_observer_shared_deadline_expired_before_metadata_starts() {
+    let fixture = Fixture::new();
+    let file = fixture.file("observed");
+    let api = checkpoint_api(
+        file.clone(),
+        ObservationCheckpointTrigger::AncestorOpen,
+        false,
+    );
+    // Count all calls without injecting cancellation: an expired caller deadline
+    // must reject the input before the first native operation starts.
+    api.fired.store(true, std::sync::atomic::Ordering::Release);
+    let observer = checkpoint_observer(&fixture, api.clone());
+    let plan = observer
+        .observe_manual_since(
+            std::slice::from_ref(&file),
+            &api.cancel,
+            std::time::Instant::now() - std::time::Duration::from_secs(4),
+        )
+        .unwrap();
+    assert!(plan.entries.is_empty());
+    assert!(plan.roots.is_empty());
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.reason_key == "Manual.ObservationLimit")
+    );
+    assert_eq!(
+        api.calls_after_trigger
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert!(std::path::Path::new(&file).exists());
+}
+
+#[test]
+fn taskowned_observer_shared_deadline_is_checked_inside_deep_ancestor_chain() {
+    let fixture = Fixture::new();
+    let file = fixture.file("one\\two\\three\\four\\five\\six\\seven\\eight\\observed");
+    let mut api = checkpoint_api(
+        file.clone(),
+        ObservationCheckpointTrigger::DeepAncestorOpen,
+        true,
+    );
+    Arc::get_mut(&mut api).unwrap().delay = std::time::Duration::from_millis(150);
+    let observer = checkpoint_observer(&fixture, api.clone());
+    let plan = observer
+        .observe_manual_since(
+            std::slice::from_ref(&file),
+            &api.cancel,
+            std::time::Instant::now() - std::time::Duration::from_millis(2900),
+        )
+        .unwrap();
+    assert!(api.fired.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(
+        api.ancestor_open_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        3
+    );
+    assert_eq!(
+        api.calls_after_trigger
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert!(plan.entries.is_empty());
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.reason_key == "Manual.ObservationLimit")
+    );
+    assert!(std::path::Path::new(&file).exists());
 }

@@ -1,4 +1,4 @@
-DiskBurrow 0.3.0-alpha.3 - Rust preview (unsigned)
+DiskBurrow 0.3.0-alpha.6 - Rust preview (unsigned)
 
 Requires Windows 10 22H2 / Windows 11 x64 and a working Direct3D 11 driver.
 Extract the complete ZIP. Run DiskBurrow.exe as an ordinary user.
@@ -23,10 +23,41 @@ trying migration. Delete operations are permanent and require separate review
 and confirmation. Changed, inaccessible, protected, linked/cloud entries are
 refused or skipped according to the native revalidation rules.
 
-Russian/English and light/dark appearance are in Settings. Save persists choices.
+Cleanup > Worth a look shows informational category/cache/build/worktree hints.
+Click a recommendation to inspect it on the map; it does not select deletion.
+Category colors and reclaim hatching are hints, not deletion permission.
+Selecting a Git checkout root performs a bounded local check; manual review
+checks up to 8 selected roots again. Unknown Git information is never clean.
+No fetch, hooks, filters or repository-selected subprocesses are allowed.
+Git must be in a standard Windows Git installation directory; arbitrary PATH
+entries and portable/custom installations elsewhere are never executed.
+Manual review estimates known physical reclaim on the scanned volume, excluding
+unknown/foreign allocation and multiple hardlinks. Actual volume free-space
+change includes concurrent programs. A post-attempt rescan retains the report.
+
+Map offers age/category colors, 1-6 drawn levels, hidden/system subtree visibility,
+breadcrumb siblings/above-root widening, wheel entry and a resizable sidebar.
+The Keys dialog explains pointer/keyboard navigation, search and rescan shortcuts.
+A bounded compatible ordinary subtree may be reused; cached observations are labelled.
+Failed/cancelled widening retains the completed view. Deletion attempts clear cache.
+Save selected TXT creates a new file of outermost indexed selected paths.
+Copy review prompt copies advisory text; paths remain data, never shell instructions.
+Inspect private paths before sharing an export. Neither action authorizes deletion.
+
+Russian/English and system/light/dark appearance are in Settings. Interface scale
+75-150% is independent of map zoom; Ctrl+plus/minus/0 changes/resets it.
+Save persists display choices.
 Decimal GB means 1,000,000,000 bytes. Closing normal mode hides to the tray;
 Tray Exit stops the app. Closing isolated mode exits.
 
 LICENSE.txt and ThirdParty contain dependency license texts and attribution.
 manifest.json records source revision, executable checksum and runtime imports.
 Source: https://github.com/DinLemon/DiskBurrow/tree/main
+
+Map panel shows marked roots, read-only physical reclaim forecast and recommendations.
+Parent marks absorb children; unmark the parent to select children separately.
+Launch DiskBurrow.exe "E:\My folder" -a -H -d 4 --metric files to scan/open the map.
+A second normal launch forwards its folder to the existing instance after busy work.
+Map keys: space/X mark, C review, T mode, D size, I hidden, S search, O Explorer.
+Review: S TXT, A prompt, ! clear, Enter separate confirmation. Trash unsupported.
+Use --help for bounded ordinary-worker options and other supported switches.

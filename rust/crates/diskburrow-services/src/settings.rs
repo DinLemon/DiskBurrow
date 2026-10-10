@@ -20,6 +20,10 @@ pub struct AppSettings {
     pub growth_bytes: i64,
     pub language: String,
     pub theme: String,
+    pub ui_scale_percent: u16,
+    pub map_depth: u8,
+    pub show_hidden: bool,
+    pub sidebar_width: u16,
     pub excluded_paths: Vec<String>,
     pub paused: bool,
     pub allow_on_battery: bool,
@@ -36,6 +40,10 @@ impl Default for AppSettings {
             growth_bytes: 5_000_000_000,
             language: "ru".into(),
             theme: "light".into(),
+            ui_scale_percent: 100,
+            map_depth: 3,
+            show_hidden: true,
+            sidebar_width: 225,
             excluded_paths: vec![],
             paused: false,
             allow_on_battery: false,
@@ -52,7 +60,10 @@ impl AppSettings {
             || self.initial_delay != "00:05:00"
             || self.free_space_interval != "00:05:00"
             || !["ru", "en"].contains(&self.language.as_str())
-            || !["light", "dark"].contains(&self.theme.as_str())
+            || !["light", "dark", "system"].contains(&self.theme.as_str())
+            || ![75, 90, 100, 110, 125, 150].contains(&self.ui_scale_percent)
+            || !(1..=6).contains(&self.map_depth)
+            || !(180..=420).contains(&self.sidebar_width)
             || self.excluded_paths.iter().any(|p| !is_fully_qualified(p))
             || self
                 .approved_custom_temp_path
