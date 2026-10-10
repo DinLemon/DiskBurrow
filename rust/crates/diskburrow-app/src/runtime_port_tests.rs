@@ -741,3 +741,176 @@ fn port_display_settings_persist_and_invalid_edits_cannot_replace_the_saved_valu
         assert_eq!(SettingsStore::new(data.clone()).load(), expected);
     }
 }
+
+#[test]
+fn panel_txt_and_json_exports_wait_for_observer_directory_leases() {
+    use diskburrow_windows::{NativeFileApi as _, WindowsNativeFileApi};
+    for selected in [true, false] {
+        let fixture = tempfile::Builder::new()
+            .prefix("diskburrow-port-")
+            .tempdir()
+            .unwrap();
+        let root = fixture.path().join("scan");
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("keep.bin");
+        fs::write(&file, b"owned retained data").unwrap();
+        let mut runtime = scanned(fixture.path().join("data"), &root);
+        runtime.command(Command::Mark(local(&file)));
+        forecast_idle(&mut runtime);
+        let generation = runtime.forecast_generation;
+        let scan_id = runtime.scan_id().unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let path = local(fixture.path());
+        let tx = runtime.tx.clone();
+        let join = thread::spawn(move || {
+            let lease = WindowsNativeFileApi.open_directory(&path).unwrap();
+            ready_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(3));
+            drop(lease);
+            let _ = tx.send(Event::ForecastFinished {
+                generation,
+                scan_id,
+                observation: None,
+            });
+        });
+        ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        runtime.forecast_job = Some(ForecastJob {
+            generation,
+            scan_id,
+            cancel: Cancellation::default(),
+            join,
+        });
+        let destination = fixture.path().join(if selected {
+            "selected.txt"
+        } else {
+            "snapshot.json"
+        });
+        runtime.command(if selected {
+            Command::ExportSelection(local(&destination))
+        } else {
+            Command::Export(local(&destination))
+        });
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < deadline {
+            runtime.poll();
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            runtime.view.busy,
+            "Export must await canceled native directory observation instead of publishing or failing early"
+        );
+        assert!(!destination.exists());
+        release_tx.send(()).unwrap();
+        idle(&mut runtime);
+        assert!(runtime.view.error.is_none(), "{:?}", runtime.view.error);
+        assert!(destination.exists());
+        assert_eq!(fs::read(&file).unwrap(), b"owned retained data");
+    }
+}
+
+#[test]
+fn panel_forecast_rejects_replaced_ancestor_before_any_path_identity_probe() {
+    use diskburrow_windows::{NativeFileApi, WindowsNativeFileApi};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct CountingApi(AtomicUsize);
+    impl NativeFileApi for CountingApi {
+        fn inspect(&self, path: &str) -> std::io::Result<diskburrow_services::FileObservation> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            WindowsNativeFileApi.inspect(path)
+        }
+    }
+    let fixture = tempfile::Builder::new()
+        .prefix("diskburrow-port-")
+        .tempdir()
+        .unwrap();
+    let ancestor = fixture.path().join("ancestor");
+    let root = ancestor.join("scan");
+    let foreign = fixture.path().join("foreign");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(foreign.join("scan")).unwrap();
+    let file = root.join("keep.bin");
+    fs::write(&file, b"owned original data").unwrap();
+    fs::write(
+        foreign.join("scan").join("keep.bin"),
+        b"foreign data must not be observed",
+    )
+    .unwrap();
+    let runtime = scanned(fixture.path().join("data"), &root);
+    let service = runtime.service.clone();
+    drop(runtime);
+    fs::rename(&ancestor, fixture.path().join("original")).unwrap();
+    let output = std::process::Command::new(
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("cmd.exe"),
+    )
+    .args(["/d", "/c", "mklink", "/J"])
+    .arg(local(&ancestor))
+    .arg(local(&foreign))
+    .output()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "Owned junction fixture must be created: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let api = CountingApi(AtomicUsize::new(0));
+    let result = Runtime::observe_forecast(
+        &api,
+        &service,
+        &local(&root),
+        &[local(&file)],
+        &Cancellation::default(),
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        api.0.load(Ordering::SeqCst),
+        0,
+        "Forecast must pin/check ancestors before a root identity probe can traverse a replacement junction"
+    );
+    assert_eq!(
+        fs::read(fixture.path().join("original/scan/keep.bin")).unwrap(),
+        b"owned original data"
+    );
+}
+
+#[test]
+fn panel_busy_export_cannot_take_observers_or_block_the_event_thread() {
+    let fixture = tempfile::Builder::new()
+        .prefix("diskburrow-port-")
+        .tempdir()
+        .unwrap();
+    let root = fixture.path().join("scan");
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("keep.bin");
+    fs::write(&file, b"owned").unwrap();
+    let mut runtime = scanned(fixture.path().join("data"), &root);
+    runtime.command(Command::Mark(local(&file)));
+    forecast_idle(&mut runtime);
+    let (release_tx, release_rx) = mpsc::channel();
+    runtime.forecast_job = Some(ForecastJob {
+        generation: runtime.forecast_generation,
+        scan_id: runtime.scan_id().unwrap(),
+        cancel: Cancellation::default(),
+        join: thread::spawn(move || {
+            let _ = release_rx.recv_timeout(Duration::from_secs(3));
+        }),
+    });
+    runtime.view.busy = true;
+    let started = Instant::now();
+    runtime.command(Command::ExportSelection(local(
+        &fixture.path().join("busy.txt"),
+    )));
+    runtime.command(Command::Export(local(&fixture.path().join("busy.json"))));
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "Rejected export must not join native observers on the event thread"
+    );
+    assert!(runtime.forecast_job.is_some());
+    assert!(!fixture.path().join("busy.txt").exists());
+    assert!(!fixture.path().join("busy.json").exists());
+    release_tx.send(()).unwrap();
+    runtime.view.busy = false;
+}

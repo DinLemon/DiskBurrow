@@ -1,4 +1,4 @@
-# Rust client validation — 2026-10-10
+# Rust client validation — 2026-10-11
 
 ## Alpha.6 map panel, hierarchical marks and compatible launch candidate
 
@@ -12,10 +12,16 @@ authority. It excludes unknown/foreign allocation and multi-link identities, and
 checks scan UUID, selection generation, cancellation and root identity before
 publication. Limits are 2000 roots, 100000 paths, 64 MiB conservative metadata
 reservations, 1 MiB selected input, 16 KiB per path, depth64 and a shared cooperative
-3-second deadline between OS calls. A single OS call cannot be forcibly preempted.
+3-second deadline shared from root pinning through inventory and volume observation.
+Cancellation/deadline checks precede each native call, including ancestor loops.
+A single OS call cannot be forcibly preempted.
 Partial/unknown metadata does not promise final free space. Confirmed deletion
 waits in its background worker for canceled observation/Git leases to be released;
-busy launch requests cannot interrupt a deletion attempt.
+busy launch requests cannot interrupt a deletion attempt. TXT/JSON export workers
+also await these leases before atomic non-overwriting publication; rejected busy
+exports never take/join observers on the event thread. Root ancestor chains remain
+pinned before and through both handle-based identity probes, rejecting replacement
+junctions before reading their descendants.
 
 Compatible map/manual-review shortcuts retain editor/modal and separate-confirmation
 priority. Positional Unicode/relative folders, disk/display/worker flags and the

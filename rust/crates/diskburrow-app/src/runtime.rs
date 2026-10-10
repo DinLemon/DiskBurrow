@@ -449,6 +449,63 @@ impl Runtime {
             job.cancel.cancel();
         }
     }
+    fn observe_forecast(
+        api: &dyn diskburrow_windows::NativeFileApi,
+        service: &CleanupService,
+        root: &str,
+        selected: &[String],
+        child: &Cancellation,
+    ) -> Result<ForecastObservation> {
+        let started = Instant::now();
+        let mut checkpoint = || -> std::io::Result<()> {
+            if child.is_cancelled() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "Cancelled",
+                ));
+            }
+            if started.elapsed() >= Duration::from_secs(3) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Forecast observation deadline",
+                ));
+            }
+            Ok(())
+        };
+        // Retain every ancestor through both identity probes and the observation.
+        let (root, pinned) = platform::local_directory_handles_checked(root, api, &mut checkpoint)?;
+        let handle = pinned
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("Root lease unavailable"))?;
+        checkpoint()?;
+        let before = api.inspect_handle(handle, &root)?;
+        checkpoint()?;
+        ensure!(
+            before.attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) == 0,
+            "Unsafe root"
+        );
+        let identity = before
+            .identity
+            .ok_or_else(|| anyhow::anyhow!("Unknown volume identity"))?;
+        let plan = service.observe_manual_since(selected, child, started)?;
+        ensure!(!child.is_cancelled(), "Cancelled");
+        checkpoint()?;
+        let space = platform::volume_space_checked(&root, &mut checkpoint)?;
+        checkpoint()?;
+        let after = api.inspect_handle(handle, &root)?;
+        checkpoint()?;
+        ensure!(
+            after.identity.as_ref() == Some(&identity) && after.attributes == before.attributes,
+            "Root changed"
+        );
+        ensure!(!child.is_cancelled(), "Cancelled");
+        Ok(ForecastObservation {
+            space,
+            observed_utc: Utc::now(),
+            projection: project_manual_reclaim(&plan, identity.volume),
+            partial: !plan.warnings.is_empty(),
+        })
+    }
     fn start_forecast(&mut self) {
         if self.forecast_job.is_some()
             || self.forecast_attempted
@@ -483,32 +540,13 @@ impl Runtime {
             .spawn(move || {
                 let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<ForecastObservation> {
-                        use diskburrow_windows::{NativeFileApi as _, WindowsNativeFileApi};
-                        let api = WindowsNativeFileApi;
-                        let before = api.inspect(&root)?;
-                        ensure!(
-                            before.attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) == 0,
-                            "Unsafe root"
-                        );
-                        let identity = before
-                            .identity
-                            .ok_or_else(|| anyhow::anyhow!("Unknown volume identity"))?;
-                        let plan = service.observe_manual(&selected, &child)?;
-                        ensure!(!child.is_cancelled(), "Cancelled");
-                        let space = platform::volume_space(&root)?;
-                        let after = api.inspect(&root)?;
-                        ensure!(
-                            after.identity.as_ref() == Some(&identity)
-                                && after.attributes == before.attributes,
-                            "Root changed"
-                        );
-                        ensure!(!child.is_cancelled(), "Cancelled");
-                        Ok(ForecastObservation {
-                            space,
-                            observed_utc: Utc::now(),
-                            projection: project_manual_reclaim(&plan, identity.volume),
-                            partial: !plan.warnings.is_empty(),
-                        })
+                        Self::observe_forecast(
+                            &diskburrow_windows::WindowsNativeFileApi,
+                            &service,
+                            &root,
+                            &selected,
+                            &child,
+                        )
                     },
                 ))
                 .ok()
@@ -1275,6 +1313,22 @@ impl Runtime {
             cleanup: true,
         });
     }
+    // Metadata leases pin ancestor directories against mutation. Foreground file
+    // writes await their release in the worker so the event thread remains responsive.
+    fn observation_barrier(&mut self) -> ObservationBarrier {
+        self.invalidate_forecast();
+        self.clear_git();
+        let mut observations = Vec::new();
+        if let Some(job) = self.forecast_job.take() {
+            job.cancel.cancel();
+            observations.push(job.join);
+        }
+        if let Some(job) = self.git_job.take() {
+            job.cancel.cancel();
+            observations.push(job.join);
+        }
+        ObservationBarrier(observations)
+    }
     fn execute(&mut self, cleanup: bool) {
         self.scan_cache = None;
         if self.view.busy {
@@ -1292,18 +1346,7 @@ impl Runtime {
         };
         let service = self.service.clone();
         let selected = self.reviewed_cleanup.clone();
-        self.invalidate_forecast();
-        self.clear_git();
-        let mut observations = Vec::new();
-        if let Some(job) = self.forecast_job.take() {
-            job.cancel.cancel();
-            observations.push(job.join);
-        }
-        if let Some(job) = self.git_job.take() {
-            job.cancel.cancel();
-            observations.push(job.join);
-        }
-        let barrier = ObservationBarrier(observations);
+        let barrier = self.observation_barrier();
         self.manual_plan = None;
         self.reviewed_cleanup.clear();
         self.spawn(Purpose::Cleanup, "Status.Cleaning", move |cancel, _, _| {
@@ -1317,6 +1360,9 @@ impl Runtime {
         });
     }
     fn export(&mut self, destination: String) {
+        if self.view.busy || self.exiting {
+            return;
+        }
         let Some(snapshot) = self.snapshot.clone() else {
             return;
         };
@@ -1324,7 +1370,10 @@ impl Runtime {
             self.error("An absolute report destination is required");
             return;
         }
+        let barrier = self.observation_barrier();
         self.spawn(Purpose::Export, "Status.Exporting", move |cancel, _, _| {
+            barrier.wait();
+            ensure!(!cancel.is_cancelled(), "Cancelled");
             let destination = PathBuf::from(destination);
             let directory = destination
                 .parent()
@@ -1361,6 +1410,9 @@ impl Runtime {
         })
     }
     fn export_selection(&mut self, destination: String) {
+        if self.view.busy || self.exiting {
+            return;
+        }
         let Some(export) = self.selected_export().filter(|export| export.count > 0) else {
             return;
         };
@@ -1368,7 +1420,10 @@ impl Runtime {
             self.error("An absolute list destination is required");
             return;
         }
+        let barrier = self.observation_barrier();
         self.spawn(Purpose::Export, "Status.Exporting", move |cancel, _, _| {
+            barrier.wait();
+            ensure!(!cancel.is_cancelled(), "Cancelled");
             let destination = PathBuf::from(destination);
             let parent = destination
                 .parent()

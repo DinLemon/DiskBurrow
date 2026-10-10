@@ -793,7 +793,20 @@ impl CleanupService {
         selected: &[String],
         cancel: &Cancellation,
     ) -> anyhow::Result<ManualDeletePlan> {
-        self.collect_manual(selected, cancel, Some(ObservationBudget::new()))
+        self.observe_manual_since(selected, cancel, std::time::Instant::now())
+    }
+    /// Share the caller's forecast deadline, including work done before collection.
+    pub fn observe_manual_since(
+        &self,
+        selected: &[String],
+        cancel: &Cancellation,
+        started: std::time::Instant,
+    ) -> anyhow::Result<ManualDeletePlan> {
+        let budget = ObservationBudget {
+            started,
+            ..ObservationBudget::new()
+        };
+        self.collect_manual(selected, cancel, Some(budget))
             .map(|(plan, _)| plan)
     }
     pub fn preview_manual(
@@ -920,28 +933,32 @@ impl CleanupService {
                 if !self.allowed_manual(&path) {
                     return Err(Fault::changed("Manual.ProtectedPath"));
                 }
-                let lease =
-                    AncestorLease::open(self.api.as_ref(), &path).map_err(Fault::manual_io)?;
+                let lease = AncestorLease::open_checked(self.api.as_ref(), &path, &mut || {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)
+                })?;
                 merge_ancestors(ancestors, lease.identities())?;
-                if let Some(b) = budget.as_ref() {
-                    b.check(pending.len(), cancel)?;
-                }
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 let handle = self.api.open_metadata(&path).map_err(Fault::manual_io)?;
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 let o = self
                     .api
                     .inspect_handle(&handle, &path)
                     .map_err(Fault::manual_io)?;
-                self.ensure_manual_safe(&path, &handle, &o)?;
-                if let Some(b) = budget.as_ref() {
-                    b.check(pending.len(), cancel)?;
-                }
+                self.ensure_manual_safe_checked(&path, &handle, &o, &mut || {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)
+                })?;
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 if o.attributes & DIRECTORY != 0 {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                     let dir = self.api.open_directory(&path).map_err(Fault::manual_io)?;
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                     let pinned = self
                         .api
                         .inspect_handle(&dir, &path)
                         .map_err(Fault::manual_io)?;
-                    self.ensure_manual_safe(&path, &dir, &pinned)?;
+                    self.ensure_manual_safe_checked(&path, &dir, &pinned, &mut || {
+                        Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)
+                    })?;
                     if pinned.identity != o.identity {
                         return Err(Fault::changed("Manual.Changed"));
                     }
@@ -949,7 +966,14 @@ impl CleanupService {
                         ancestors,
                         [(path.as_str(), o.identity.as_ref().unwrap())].into_iter(),
                     )?;
-                    for child in fs::read_dir(&path).map_err(Fault::manual_io)? {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
+                    let mut children = fs::read_dir(&path).map_err(Fault::manual_io)?;
+                    loop {
+                        // Check before next(), which itself may perform an enumeration syscall.
+                        Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
+                        let Some(child) = children.next() else {
+                            break;
+                        };
                         if cancel.is_cancelled() {
                             return Err(Fault::policy("Manual.Cancelled"));
                         }
@@ -975,18 +999,16 @@ impl CleanupService {
                         pending.push(child.path().to_string_lossy().into_owned());
                     }
                 }
-                if let Some(b) = budget.as_ref() {
-                    b.check(pending.len(), cancel)?;
-                }
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 entries.push(ManualDeleteEntry {
                     id: Uuid::new_v4(),
                     root_path: root.into(),
                     file: o,
                 });
-                lease.verify().map_err(Fault::manual_io)?;
-                if let Some(b) = budget.as_ref() {
-                    b.check(pending.len(), cancel)?;
-                }
+                lease.verify_checked(&mut || {
+                    Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)
+                })?;
+                Self::inventory_checkpoint(budget.as_deref(), pending.len(), cancel)?;
                 Ok(())
             })();
             if let Err(mut e) = result {
@@ -996,18 +1018,40 @@ impl CleanupService {
         }
         Ok(())
     }
+    fn inventory_checkpoint(
+        budget: Option<&ObservationBudget>,
+        pending: usize,
+        cancel: &Cancellation,
+    ) -> Result<(), Fault> {
+        // Existing authoritative inventory keeps its original checks and policy.
+        // Only observation has the per-call deadline/cancellation checkpoint.
+        budget.map_or(Ok(()), |budget| budget.check(pending, cancel))
+    }
     fn ensure_manual_safe(
         &self,
         path: &str,
         h: &NativeHandle,
         o: &FileObservation,
     ) -> Result<(), Fault> {
+        self.ensure_manual_safe_checked(path, h, o, &mut || Ok(()))
+    }
+    fn ensure_manual_safe_checked(
+        &self,
+        path: &str,
+        h: &NativeHandle,
+        o: &FileObservation,
+        checkpoint: &mut impl FnMut() -> Result<(), Fault>,
+    ) -> Result<(), Fault> {
         if o.identity.is_none()
             || o.logical_bytes < 0
             || o.attributes & (REPARSE | READONLY | SYSTEM) != 0
             || is_cloud(o.attributes)
-            || canonical(&self.api.final_path(h).map_err(Fault::manual_io)?)
-                .is_none_or(|p| !equals_path(path, &p))
+        {
+            return Err(Fault::changed("Manual.UnsafePath"));
+        }
+        checkpoint()?;
+        if canonical(&self.api.final_path(h).map_err(Fault::manual_io)?)
+            .is_none_or(|p| !equals_path(path, &p))
         {
             return Err(Fault::changed("Manual.UnsafePath"));
         }
@@ -1248,6 +1292,11 @@ struct Fault {
     outcome: CleanupOutcome,
     reason: &'static str,
     path: Option<String>,
+}
+impl From<io::Error> for Fault {
+    fn from(error: io::Error) -> Self {
+        Self::manual_io(error)
+    }
 }
 impl Fault {
     fn changed(reason: &'static str) -> Self {

@@ -119,16 +119,24 @@ pub fn is_local_path(path: &str) -> bool {
 fn local_directory_handles(
     path: &str,
 ) -> io::Result<(String, Vec<diskburrow_windows::NativeHandle>)> {
+    local_directory_handles_checked(path, &WindowsNativeFileApi, &mut || Ok(()))
+}
+pub(crate) fn local_directory_handles_checked(
+    path: &str,
+    api: &dyn NativeFileApi,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<(String, Vec<diskburrow_windows::NativeHandle>)> {
+    checkpoint()?;
     crate::cli::validate_absolute_root(path)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     let path = path.to_owned();
     if !WindowsRuleEnvironment.is_local_path(&path) {
         return Err(io::Error::other("Non-local volume"));
     }
+    checkpoint()?;
     // Pin each directory before resolving its child; cloud/reparse points are never followed.
     let mut current = String::with_capacity(path.len());
     current.push_str(&path[..3]);
-    let api = WindowsNativeFileApi;
     let mut handles = Vec::new();
     let mut volume = None;
     for component in std::iter::once(None).chain(
@@ -144,9 +152,13 @@ fn local_directory_handles(
             }
             current.push_str(component);
         }
+        checkpoint()?;
         let h = api.open_directory(&current)?;
+        checkpoint()?;
         let o = api.inspect_handle(&h, &current)?;
+        checkpoint()?;
         let final_path = api.final_path(&h)?;
+        checkpoint()?;
         let id = o
             .identity
             .ok_or_else(|| io::Error::other("Directory identity unavailable"))?;
@@ -164,7 +176,14 @@ fn local_directory_handles(
     Ok((path, handles))
 }
 pub fn volume_space(path: &str) -> anyhow::Result<VolumeSpace> {
-    let (path, _pinned) = local_directory_handles(path)?;
+    volume_space_checked(path, &mut || Ok(()))
+}
+pub(crate) fn volume_space_checked(
+    path: &str,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> anyhow::Result<VolumeSpace> {
+    let (path, _pinned) = local_directory_handles_checked(path, &WindowsNativeFileApi, checkpoint)?;
+    checkpoint()?;
     let p = wide(&path);
     let mut available = 0u64;
     let mut total = 0u64;
@@ -172,6 +191,7 @@ pub fn volume_space(path: &str) -> anyhow::Result<VolumeSpace> {
     if unsafe { GetDiskFreeSpaceExW(p.as_ptr(), &mut available, &mut total, &mut free) } == 0 {
         return Err(io::Error::last_os_error().into());
     }
+    checkpoint()?;
     Ok(VolumeSpace {
         total_bytes: i64::try_from(total)?,
         free_bytes: i64::try_from(available.min(total))?,
