@@ -1440,11 +1440,13 @@ mod observation_budget_tests {
     use crate::FixedRuleEnvironment;
 
     fn service_fixture() -> (tempfile::TempDir, CleanupService) {
+        let scratch = std::env::temp_dir();
+        assert!(scratch.is_absolute());
         let tree = tempfile::Builder::new()
             .prefix("taskowned-observer-")
-            .tempdir()
+            .tempdir_in(&scratch)
             .unwrap();
-        assert!(tree.path().to_string_lossy().starts_with("E:"));
+        assert_eq!(tree.path().parent(), Some(scratch.as_path()));
         let path = |part: &str| tree.path().join(part).to_string_lossy().into_owned();
         let known = KnownDirectories {
             user_profile: path("profile"),

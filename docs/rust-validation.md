@@ -35,8 +35,13 @@ The helper remains a separate exact grammar; `--` positional data cannot activat
 Largest-folder projection ranks directory references before resolving visibility,
 and stops those path lookups after 2000 visible rows. Hidden higher-ranked rows do
 not consume the visible limit; equal-sized rows retain their original order.
-The missing-root native fixture uses an owned temporary directory on an available
-local drive, rather than assuming a fixed drive letter exists on hosted runners.
+For generated paired snapshots, transient ordinal visibility flags avoid repeated
+sibling searches, including mostly-hidden trees. All directory paths, counts and
+index ancestry must match before flags are used; mismatches retain path resolution.
+The missing-root and observer native fixtures use owned temporary directories on
+an available local drive, rather than assuming a fixed hosted-runner drive letter.
+Opt-in executable verification writes bounded stage/elapsed diagnostics without
+paths or content, making a scan/projection/export delay distinguishable.
 
 Final full-suite, immutable review, portable EXE and hosted CI results are recorded
 with the exact source revision in the candidate's verification artifacts. Programmatic
