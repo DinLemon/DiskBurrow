@@ -743,9 +743,9 @@ mod tests {
     use std::cell::RefCell;
     #[test]
     fn invalid_deep_and_unnormalized_roots_fail_before_native_metadata() {
-        let missing = format!("E:\\DiskBurrow-no-fixture-{}", unsafe {
-            GetCurrentProcessId()
-        });
+        let fixture = tempfile::tempdir().unwrap();
+        let missing = fixture.path().join("missing").to_str().unwrap().to_owned();
+        assert!(!Path::new(&missing).exists());
         let deep = format!("{missing}\\{}", vec!["a"; 64].join("\\"));
         let oversized = format!("E:\\{}", "界".repeat(5461));
         for path in [
@@ -764,7 +764,6 @@ mod tests {
         }
         let error = local_directory_handles(&missing).err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
-        let fixture = tempfile::tempdir().unwrap();
         let (path, handles) = local_directory_handles(fixture.path().to_str().unwrap()).unwrap();
         assert_eq!(path, fixture.path().to_str().unwrap());
         assert!(!handles.is_empty() && handles.len() <= 65);
