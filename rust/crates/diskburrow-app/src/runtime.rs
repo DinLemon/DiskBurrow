@@ -471,8 +471,8 @@ impl Runtime {
         let selected = self
             .marks
             .iter()
-            .cloned()
             .take(ROW_LIMIT + 1)
+            .cloned()
             .collect::<Vec<_>>();
         let service = self.service.clone();
         let cancel = Cancellation::default();
@@ -1084,7 +1084,7 @@ impl Runtime {
         self.clear_git();
         let started = Utc::now();
         let data = self.data_dir.clone();
-        let scan_threads = self.scan_threads.clone();
+        let scan_threads = self.scan_threads;
         self.spawn(
             Purpose::Scan {
                 root: root.clone(),
