@@ -1010,3 +1010,136 @@ fn taskowned_cleanup_age_browser_scope_and_selected_ids() {
     assert!(std::path::Path::new(&cookies).exists());
     assert!(std::path::Path::new(&txt).exists());
 }
+
+#[test]
+fn taskowned_manual_observer_preserves_issued_preview_and_cannot_authorize_deletion() {
+    let f = Fixture::new();
+    let reviewed = f.file("reviewed");
+    let observed = f.file("observed");
+    let svc = f.service();
+    let cancel = Cancellation::default();
+    let issued = svc
+        .preview_manual(std::slice::from_ref(&reviewed), &cancel)
+        .unwrap();
+    let observation = svc
+        .observe_manual(std::slice::from_ref(&observed), &cancel)
+        .unwrap();
+    assert_eq!(observation.file_count(), 1);
+    assert_ne!(observation.id, issued.id);
+    let error = svc
+        .execute_manual(observation.id, true, &cancel)
+        .unwrap_err();
+    assert!(error.to_string().contains("Manual.PlanUnavailable"));
+    assert!(std::path::Path::new(&observed).exists());
+    let report = svc.execute_manual(issued.id, true, &cancel).unwrap();
+    assert!(
+        report
+            .items
+            .iter()
+            .all(|item| item.outcome == CleanupOutcome::Deleted)
+    );
+    assert!(!std::path::Path::new(&reviewed).exists());
+    assert!(std::path::Path::new(&observed).exists());
+}
+
+#[test]
+fn taskowned_cancelled_manual_observer_preserves_issued_preview() {
+    let f = Fixture::new();
+    let file = f.file("reviewed");
+    let svc = f.service();
+    let cancel = Cancellation::default();
+    let issued = svc
+        .preview_manual(std::slice::from_ref(&file), &cancel)
+        .unwrap();
+    let stopped = Cancellation::default();
+    stopped.cancel();
+    assert!(
+        svc.observe_manual(std::slice::from_ref(&file), &stopped)
+            .is_err()
+    );
+    let report = svc.execute_manual(issued.id, true, &cancel).unwrap();
+    assert!(
+        report
+            .items
+            .iter()
+            .all(|item| item.outcome == CleanupOutcome::Deleted)
+    );
+    assert!(!std::path::Path::new(&file).exists());
+}
+
+#[test]
+fn taskowned_manual_observer_caps_input_roots_without_opening_metadata() {
+    let f = Fixture::new();
+    let file = f.file("observed");
+    let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = opened.clone();
+    let svc = f.hooked(Hooks {
+        after_inspect: Some(Box::new(move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })),
+        ..Hooks::default()
+    });
+    let plan = svc
+        .observe_manual(&vec![file.clone(); 2001], &Cancellation::default())
+        .unwrap();
+    assert!(plan.roots.is_empty());
+    assert!(plan.entries.is_empty());
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|warning| warning.reason_key == "Manual.ObservationLimit")
+    );
+    assert_eq!(opened.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert!(std::path::Path::new(&file).exists());
+}
+
+#[test]
+fn taskowned_manual_observer_cancels_during_directory_enumeration() {
+    let f = Fixture::new();
+    for n in 0..12 {
+        f.file(&format!("observed\\file-{n}"));
+    }
+    let root = f.path("observed");
+    let cancel = Cancellation::default();
+    let signal = cancel.clone();
+    let watched = root.clone();
+    let svc = f.hooked(Hooks {
+        after_inspect: Some(Box::new(move |path| {
+            if equals_path(path, &watched) {
+                signal.cancel();
+            }
+        })),
+        ..Hooks::default()
+    });
+    assert!(svc.observe_manual(&[root], &cancel).is_err());
+    assert!(std::path::Path::new(&f.path("observed\\file-11")).exists());
+}
+
+#[test]
+fn taskowned_manual_observer_rejects_long_or_deep_roots_before_native_metadata() {
+    let f = Fixture::new();
+    let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = opened.clone();
+    let svc = f.hooked(Hooks {
+        after_inspect: Some(Box::new(move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })),
+        ..Hooks::default()
+    });
+    for root in [
+        f.path(&"a".repeat(16_385)),
+        f.path(&vec!["a"; 65].join("\\")),
+    ] {
+        let plan = svc
+            .observe_manual(&[root], &Cancellation::default())
+            .unwrap();
+        assert!(plan.roots.is_empty());
+        assert!(plan.entries.is_empty());
+        assert!(
+            plan.warnings
+                .iter()
+                .any(|warning| warning.reason_key == "Manual.ObservationLimit")
+        );
+    }
+    assert_eq!(opened.load(std::sync::atomic::Ordering::Relaxed), 0);
+}

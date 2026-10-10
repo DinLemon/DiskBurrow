@@ -30,7 +30,7 @@
 
 ## Rust is the primary client
 
-The native Rust/GPUI development version is **0.3.0-alpha.5**.
+The native Rust/GPUI development version is **0.3.0-alpha.6**.
 The published Rust preview remains [0.3.0-alpha.3](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3) until a new prerelease is published.
 It remains an **unsigned preview**. Manual desktop, UAC, tray and logon checks
 are pending: see [validated evidence and limitations](docs/rust-validation.md).
@@ -39,7 +39,7 @@ the previous [stable 0.2.2 release](https://github.com/DinLemon/DiskBurrow/relea
 
 ## Install and run
 
-1. Open the published [0.3.0-alpha.3 prerelease page](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3). Its assets are `DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip` and `.zip.sha256`. Alpha.5 features below belong to the development candidate.
+1. Open the published [0.3.0-alpha.3 prerelease page](https://github.com/DinLemon/DiskBurrow/releases/tag/v0.3.0-alpha.3). Its assets are `DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip` and `.zip.sha256`. Alpha.6 features below belong to the development candidate.
 2. Verify with `Get-FileHash .\DiskBurrow-0.3.0-alpha.3-rust-win-x64.zip -Algorithm SHA256` and compare the complete hash. Extract the **whole** ZIP into a new folder. Run `DiskBurrow.exe` as your ordinary user. Requires Windows 10 22H2 or Windows 11 x64; installing .NET or Rust is unnecessary. SQLite and the CRT are included in the native build.
 3. Close the old client and back up `%LOCALAPPDATA%\DiskBurrow` outside that directory before the first normal launch. Rust uses compatible settings/history. For an isolated trial: `DiskBurrow.exe --data-dir E:\DiskBurrowTrial --scan-root E:\MyTestFolder`. This disables monitoring, tray and autostart; it does **not** sandbox deliberately confirmed deletion.
 4. Russian is the default; select English in Settings. Light/dark appearances switch immediately; **Save** persists your choice. In normal mode, closing hides the window to the tray; **Exit** cancels work and ends the app. A second launch activates the existing instance for your user.
@@ -83,7 +83,7 @@ This manual operation is separate from the four cache cleanup rules. Volume root
 
 In the development candidate, review also shows known physical reclaim on the scanned volume. Unknown allocation, other volumes and all files with multiple hardlinks are excluded from the estimate. The measured free-space change can be negative or unavailable and includes activity by other programs. After an attempt, the app rescans the previous scan root and retains the deletion report/journal even if refresh fails or is cancelled.
 
-## Insights and Git checks — alpha.5 development
+## Insights and Git checks — alpha.6 development
 
 - Category colors identify code, agent scratch, toolchains, synced data, Git stores, media, documents and caches. Hatching marks potentially reclaimable data; it does not mark files for deletion.
 - Cleanup → **Worth a look** lists up to 100 nonoverlapping indexed cache/build/worktree/old-experiment hints of at least 64 MiB. Incomplete coverage/allocation is disclosed. Click a path to inspect it on the map. Existing NuGet/pip hints and maintenance instructions remain under **Observed caches**.
@@ -91,13 +91,21 @@ In the development candidate, review also shows known physical reclaim on the sc
 - Git is discovered only in OS-known `Program Files\Git`, `Program Files (x86)\Git` or `%LOCALAPPDATA%\Programs\Git` installation directories. Arbitrary PATH entries and portable/custom installations elsewhere are not executed; those configurations report Git unavailable.
 - Manual review repeats Git inspection for at most 8 selected roots, before separate permanent confirmation. These counters are advisory and can become stale; native file/ancestor revalidation remains authoritative. Git processes have a 5-second total inspection limit and a 1 MiB combined output budget, with external subprocesses refused and cancellation terminating their Windows job.
 
-## Navigation and display — alpha.5 development
+## Navigation and display — alpha.6 development
 
 - Switch category/age colors without changing the selected physical/logical/file-count area metric. Last-write bands are unknown/future, up to 7/30/180/365 days and older; age is not evidence of junk. Choose 1–6 drawn levels and hide dot/Windows hidden/system subtrees from the map, search and current Largest lists. The full retained scan and marks remain intact.
 - Breadcrumb menus list siblings ranked by the visible selected metric. Above-root breadcrumbs widen an ordinary scan and focus the previous root. A compatible small ordinary subtree may be reused (32 MiB / 100,000 entries / depth 64); the sidebar labels cached observations. Native root identity and timestamps are checked before/after the traversal; changed roots, fast indexes and deletion attempts do not reuse the cache. Failed/cancelled widening preserves completed results.
 - Wheel zoom enters a directory on the next notch after it fills the viewport; zooming out at base scale goes up. Arrows/Tab select tiles/siblings, Space marks, Enter enters, right click opens Explorer. The **Keys** dialog lists search, depth, hidden, age, export and rescan shortcuts. Typing in native editors stays separate from map keys.
 - Resize the sidebar by dragging its divider; double click or **Reset sidebar width** restores 225 px. Settings offers system/light/dark appearance and 75–150% interface scale, independent of map zoom. **Save** persists display choices; Ctrl+plus/minus/0 changes/resets interface scale.
 - **Save selected TXT** writes outermost indexed selected paths to a new file. **Copy review prompt** copies a localized advisory text with escaped path data. Exports contain private paths; inspect them before sharing. These actions never execute commands or authorize deletion; snapshot JSON remains available.
+
+## Map panel, marks and launch — alpha.6 development
+
+- The map sidebar lists marked outermost roots even when hidden by the display projection, with individual unmarking, clear-all and the existing informational recommendations. Selecting a parent absorbs child marks. A covered child explains its parent; unmark that parent before selecting children separately.
+- A bounded cancellable metadata observer shows known physical reclaim and observed free space. It creates no deletion review or authorization. Unknown allocation, hardlinks, other volumes, protected/inaccessible paths and limits are disclosed; incomplete estimates do not promise final free space. Limits: 2000 roots, 100000 paths, 64 MiB conservative metadata reservations and a shared cooperative 3-second deadline between OS calls. Fresh review and separate permanent confirmation remain mandatory.
+- Compatible map keys: arrows/HJKL, space/X, Enter, Backspace/U, Tab, T (size/files/age), D (allocated/apparent), I (hidden), G (system disk), V (volumes), P (details), O (Explorer), C (review), S or / (search), R/F5, Q and ?. Escape clears search, cancels scanning, dismisses selection, then ascends. Manual review uses S (TXT), A (prompt), ! (clear), and Enter opens separate confirmation; M cannot enable unsupported Trash.
+- Launch a local folder directly: `DiskBurrow.exe "E:\My folder" -a -H -d 4 --metric files`. Roots are bounded to 64 components and 16 KiB before metadata. Relative paths resolve in the launching process; `--` ends options. `-D/--disk`, `--scan-root`, `-x/--one-filesystem` and existing diagnostic switches remain available. Ordinary worker controls: `--power-efficiency`, `--scan-threads`, `--adaptive-threads/--fixed-threads`, `--thread-throughput-percent` and `--thread-system-cpu-percent`; these session overrides do not automatically persist. Fast NTFS keeps its separate helper policy. Link following and cross-filesystem flags are explicitly refused.
+- An explicit folder/options opens the map and schedules an ordinary scan. A second normal launch forwards validated read-only options over bounded same-user/same-executable local IPC; busy work completes before the latest queued folder is accepted. Deletion is never interrupted by a launch request. No shell registration or autostart changes are made by these launch options.
 
 Windows feature groups above are implemented against pinned disktree `6c8d4ce`; platform-specific macOS monitoring/permissions and upstream Trash behavior are outside this Windows app. Permanent deletion with separate confirmation remains the chosen policy. Manual UAC/tray/logon and desktop visual acceptance is still pending.
 

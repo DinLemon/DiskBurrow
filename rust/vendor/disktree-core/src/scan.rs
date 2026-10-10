@@ -493,6 +493,7 @@ impl WalkContext {
         }
         Classified::Subdirectory {
             path,
+            attributes: entry.attributes(),
             name: entry.take_name(),
         }
     }
@@ -538,6 +539,7 @@ impl WalkContext {
             return Classified::Subdirectory {
                 path: path.to_path_buf(),
                 name,
+                attributes: metadata_attributes(&meta),
             };
         }
 
@@ -821,7 +823,11 @@ fn list(path: &Path, volume: Option<u64>) -> io::Result<crate::windows::ReadDir>
 /// What a directory entry turned out to be.
 enum Classified {
     /// Descend into this directory on a new task.
-    Subdirectory { path: PathBuf, name: Box<str> },
+    Subdirectory {
+        path: PathBuf,
+        name: Box<str>,
+        attributes: u32,
+    },
     /// A leaf that contributes size.
     Entry(Node),
     /// Filtered out, unreadable, or a symlink we chose not to follow.
@@ -832,6 +838,7 @@ enum Classified {
 #[derive(Debug)]
 struct PendingDir {
     path: PathBuf,
+    attributes: u32,
     parent: Option<Arc<Self>>,
     /// Starts at 1 for the directory itself; one more per subdirectory task.
     /// When it reaches zero the directory is complete.
@@ -853,9 +860,16 @@ struct Partial {
 }
 
 impl PendingDir {
-    const fn new(path: PathBuf, name: Box<str>, parent: Option<Arc<Self>>, depth: usize) -> Self {
+    const fn new(
+        path: PathBuf,
+        name: Box<str>,
+        parent: Option<Arc<Self>>,
+        depth: usize,
+        attributes: u32,
+    ) -> Self {
         Self {
             path,
+            attributes,
             parent,
             pending: AtomicUsize::new(1),
             partial: Mutex::new(Partial {
@@ -881,7 +895,7 @@ impl PendingDir {
             kind: NodeKind::Directory,
             bytes: 0,
             logical: 0,
-            attributes: 0x10,
+            attributes: self.attributes | 0x10,
             allocation_known: true,
             files: 0,
             dirs: 1,
@@ -1007,6 +1021,7 @@ fn scan_on_pool(
         file_name(root),
         None,
         0,
+        metadata_attributes(&root_meta),
     ));
     let context: &WalkContext = context;
     pool.install(|| {
@@ -1181,7 +1196,11 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
                 match entry {
                     Ok(mut entry) => {
                         match context.classify(&dir.path, &mut entry) {
-                            Classified::Subdirectory { path, name } => {
+                            Classified::Subdirectory {
+                                path,
+                                name,
+                                attributes,
+                            } => {
                                 if !context.retain(name.len(), path.as_os_str().len()) {
                                     break;
                                 }
@@ -1191,6 +1210,7 @@ fn walk(dir: &Arc<PendingDir>, context: &WalkContext) -> Vec<Arc<PendingDir>> {
                                     name,
                                     Some(Arc::clone(dir)),
                                     dir.depth + 1,
+                                    attributes,
                                 )));
                             }
                             Classified::Entry(node) => {
@@ -1593,6 +1613,7 @@ mod tests {
             file_name(temp.path()),
             None,
             0,
+            0x10,
         ));
         let queued = walk(&root, &context);
         assert_eq!(queued.len(), 128);
@@ -1706,6 +1727,17 @@ mod tests {
             .status()
             .is_ok_and(|status| status.success());
         assert!(marked, "attrib +h");
+        let included = scan_dir(root, &options());
+        let hidden = included
+            .children
+            .iter()
+            .find(|node| node.name.as_ref() == "AppData")
+            .expect("hidden directory retained");
+        assert_ne!(
+            hidden.attributes & 0x2,
+            0,
+            "completed directory retains native hidden attribute for map projection"
+        );
 
         let without = scan_dir(
             root,

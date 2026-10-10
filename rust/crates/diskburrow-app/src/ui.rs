@@ -97,6 +97,8 @@ pub struct App {
     sidebar_drag_start: Option<(f32, f32)>,
     displayed_scan_id: Option<uuid::Uuid>,
     keys_open: bool,
+    details_open: bool,
+    trash_notice: bool,
     siblings_open: Option<usize>,
     base_rem: f32,
     crumbs_scroll: gpui_kit::ScrollHandle,
@@ -120,7 +122,12 @@ pub struct App {
     last_root: String,
 }
 impl App {
-    pub fn new(runtime: Runtime, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(mut runtime: Runtime, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let page = if runtime.take_map_open() {
+            Page::Map
+        } else {
+            Page::Overview
+        };
         let view = runtime.view();
         let settings = &view.settings;
         let root = cx.new(|cx| InputState::new(window, cx).default_value(view.root.clone()));
@@ -200,6 +207,10 @@ impl App {
                 if this
                     .update_in(cx, |this, window, cx| {
                         let mut changed = this.runtime.poll();
+                        if this.runtime.take_map_open() {
+                            this.page = Page::Map;
+                            changed = true;
+                        }
                         if this.displayed_scan_id != this.runtime.scan_id() {
                             this.reset_map_targets();
                             changed = true;
@@ -240,7 +251,7 @@ impl App {
             last_root: view.root.clone(),
             displayed_scan_id: runtime.scan_id(),
             runtime,
-            page: Page::Overview,
+            page,
             root,
             search,
             filter,
@@ -259,6 +270,8 @@ impl App {
             sidebar_drag: false,
             sidebar_drag_start: None,
             keys_open: false,
+            details_open: true,
+            trash_notice: false,
             siblings_open: None,
             base_rem: window.rem_size().as_f32(),
             crumbs_scroll: gpui_kit::ScrollHandle::new(),
@@ -300,6 +313,7 @@ impl App {
             return;
         }
         self.confirmation.dismiss();
+        self.trash_notice = false;
         if matches!(
             command,
             Command::SetRoot(_)
@@ -350,6 +364,124 @@ impl App {
             Command::Setting(Setting::UiScale, steps[next].to_string()),
             cx,
         );
+    }
+    fn editor_focused(&self, window: &Window, cx: &Context<Self>) -> bool {
+        [
+            &self.root,
+            &self.search,
+            &self.filter,
+            &self.low,
+            &self.growth,
+            &self.custom,
+        ]
+        .iter()
+        .any(|state| state.focus_handle(cx).is_focused(window))
+            || self.exclusions.focus_handle(cx).is_focused(window)
+    }
+    pub(crate) fn modal_open(&self) -> bool {
+        self.confirmation.is_open()
+            || self.runtime.view().review.is_some()
+            || self.keys_open
+            || self.siblings_open.is_some()
+            || self.export_disclosure
+            || self.volumes_open
+    }
+    fn request_permanent_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.runtime.view().busy
+            && let Some(review) = self.runtime.view().review.clone()
+        {
+            self.confirmation
+                .request(&review.id, review.cleanup, review.can_confirm);
+            window.focus(&self.dialog_focus, cx);
+            cx.notify();
+        }
+    }
+    fn map_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.runtime.view().map_query.is_empty() || !self.search.read(cx).value().is_empty() {
+            self.search
+                .update(cx, |state, cx| state.set_value("", window, cx));
+            self.dispatch(Command::MapSearch(String::new()), cx);
+        } else if self.runtime.view().busy {
+            self.dispatch(Command::Cancel, cx);
+        } else if self.active_tile().is_some() || !self.runtime.view().focused_path.is_empty() {
+            self.focused_tile = None;
+            self.pointer_tile = None;
+            self.keyboard_target = true;
+            self.dispatch(Command::MapDismissFocus, cx);
+        } else {
+            self.dispatch(Command::MapUp, cx);
+        }
+        window.focus(&self.map_focus, cx);
+    }
+    fn global_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        if key == "escape" {
+            if self.confirmation.is_open() {
+                self.confirmation.dismiss();
+            } else if self.keys_open {
+                self.keys_open = false;
+            } else if self.siblings_open.is_some() {
+                self.siblings_open = None;
+            } else if self.export_disclosure {
+                self.export_disclosure = false;
+            } else if self.volumes_open {
+                self.volumes_open = false;
+            } else if self.runtime.view().review.is_some() {
+                self.dispatch(Command::DismissReview, cx);
+            } else if self.page == Page::Map {
+                self.map_escape(window, cx);
+            } else {
+                return;
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if self.confirmation.is_open()
+            || self.keys_open
+            || self.siblings_open.is_some()
+            || self.export_disclosure
+            || self.volumes_open
+        {
+            return;
+        }
+        if self.runtime.view().review.is_some() {
+            if self.editor_focused(window, cx)
+                || event.keystroke.modifiers.control
+                || event.keystroke.modifiers.alt
+            {
+                return;
+            }
+            match key {
+                "enter" => self.request_permanent_confirmation(window, cx),
+                "s" if self.runtime.view().selected_count > 0 && !self.runtime.view().busy => {
+                    self.export_marked(cx)
+                }
+                "a" if self.runtime.view().selected_count > 0 => self.copy_marked(cx),
+                "!" => self.dispatch(Command::ClearMarks, cx),
+                "p" => self.trash_notice = false,
+                "m" => self.trash_notice = true,
+                _ => return,
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if event.keystroke.modifiers.control {
+            match key {
+                "+" | "=" => self.interface_zoom(1, cx),
+                "-" => self.interface_zoom(-1, cx),
+                "0" => self.interface_zoom(0, cx),
+                "o" => self.choose_folder(cx),
+                _ => return,
+            }
+            cx.stop_propagation();
+        } else if self.page == Page::Map && !self.editor_focused(window, cx) {
+            self.map_key(event, window, cx);
+        } else if key == "f5" && !self.runtime.view().busy {
+            self.dispatch(Command::Scan(false), cx);
+            cx.stop_propagation();
+        }
     }
     pub(crate) fn active_tile(&self) -> Option<usize> {
         if self.keyboard_target {
@@ -1819,6 +1951,62 @@ impl App {
                     }
                 }),
             );
+        let mut marked = div()
+            .id("map-marked-roots")
+            .test_support()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .min_h_0()
+            .max_h(self.scaled(180.))
+            .flex_shrink_0()
+            .overflow_y_scroll();
+        for (position, row) in view.map_marked.iter().take(2000).enumerate() {
+            marked = marked.child(gpui_omarchy::with_tooltip(
+                self.button(
+                    &format!("map-marked-root-{position}"),
+                    format!("{} · {}", self.text("Map.Unmark"), row.path),
+                    Command::Mark(row.path.clone()),
+                    !view.busy,
+                    cx,
+                )
+                .w_full()
+                .min_w_0()
+                .flex_shrink_0()
+                .text_ellipsis_middle(),
+                row.path.clone(),
+            ));
+        }
+        let mut recommendations = div()
+            .id("map-recommendations-list")
+            .test_support()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .min_h_0()
+            .max_h(self.scaled(180.))
+            .flex_shrink_0()
+            .overflow_y_scroll();
+        for (position, row) in view.recommendations.iter().take(100).enumerate() {
+            let Ok(index) = row.key.parse::<usize>() else {
+                continue;
+            };
+            let label = format!("{} · {}", row.path, row.cells.join(" · "));
+            recommendations = recommendations.child(gpui_omarchy::with_tooltip(
+                self.button(
+                    &format!("map-recommendation-{position}"),
+                    label.clone(),
+                    Command::MapNavigate(index),
+                    !view.busy,
+                    cx,
+                )
+                .w_full()
+                .min_w_0()
+                .flex_shrink_0()
+                .text_ellipsis_middle(),
+                label,
+            ));
+        }
         let sidebar = div()
             .id("map-sidebar")
             .test_support()
@@ -1830,23 +2018,121 @@ impl App {
             .flex_col()
             .gap_2()
             .overflow_y_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .child(self.note(self.text("Map.Marked")))
+                    .child(
+                        div()
+                            .id("map-marked-summary")
+                            .test_support()
+                            .text_size(self.scaled(12.))
+                            .child(view.map_marked_summary.clone()),
+                    )
+                    .child(marked)
+                    .child(
+                        self.button(
+                            "map-clear-marks",
+                            self.text("Map.ClearMarks"),
+                            Command::ClearMarks,
+                            view.selected_count > 0 && !view.busy,
+                            cx,
+                        )
+                        .flex_shrink_0(),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .child(self.note(self.text("Map.Forecast")))
+                    .child(
+                        div()
+                            .id("map-forecast-summary")
+                            .test_support()
+                            .min_h_0()
+                            .max_h(px(150.))
+                            .overflow_y_scroll()
+                            .text_size(self.scaled(12.))
+                            .child(view.map_forecast.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .id("map-recommendations-title")
+                            .test_support()
+                            .text_size(self.scaled(12.))
+                            .child(format!(
+                                "{} · {}",
+                                self.text("Map.Recommendations"),
+                                view.recommendations.len()
+                            )),
+                    )
+                    .child(self.note(self.text("Lists.Bound")))
+                    .child(recommendations),
+            )
             .child(self.note(view.map_visible_summary.clone()))
             .child(self.note(view.scan_reuse_notice.clone()))
-            .child(gpui_omarchy::with_tooltip(
-                div()
-                    .id("map-focused-path")
-                    .text_ellipsis_middle()
-                    .child(view.focused_path.clone()),
-                view.focused_path.clone(),
-            ))
-            .child(self.note(view.focused_summary.clone()))
-            .child(self.note(view.git_summary.clone()))
-            .child(self.map_legend())
+            .when(self.details_open, |sidebar| {
+                sidebar.child(
+                    div()
+                        .id("map-selection-details")
+                        .test_support()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .flex_shrink_0()
+                        .child(gpui_omarchy::with_tooltip(
+                            div()
+                                .id("map-focused-path")
+                                .text_ellipsis_middle()
+                                .child(view.focused_path.clone()),
+                            view.focused_path.clone(),
+                        ))
+                        .child(self.note(view.focused_summary.clone()))
+                        .child(self.note(view.git_summary.clone()))
+                        .child(self.map_legend()),
+                )
+            })
+            .when(!view.map_covering_parent.is_empty(), |sidebar| {
+                sidebar.child(
+                    div()
+                        .id("map-covered-parent")
+                        .test_support()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .flex_shrink_0()
+                        .child(self.note(format!(
+                            "{}\n{}",
+                            self.text("Map.CoveredHint"),
+                            view.map_covering_parent
+                        )))
+                        .child(self.button(
+                            "map-unmark-parent",
+                            self.text("Map.UnmarkParent"),
+                            Command::Mark(view.map_covering_parent.clone()),
+                            !view.busy,
+                            cx,
+                        )),
+                )
+            })
             .child(self.button(
                 "map-mark-focus",
                 self.text("Map.Mark"),
                 Command::MapMark(self.active_tile().unwrap_or(0)),
-                self.active_tile().is_some(),
+                self.active_tile().is_some() && !view.busy && view.map_covering_parent.is_empty(),
                 cx,
             ))
             .child(self.button(
@@ -1962,11 +2248,7 @@ impl App {
             cx.notify();
             return;
         }
-        if self.confirmation.is_open()
-            || self.runtime.view().review.is_some()
-            || self.keys_open
-            || self.siblings_open.is_some()
-        {
+        if self.modal_open() || self.editor_focused(window, cx) {
             return;
         }
         let key = event.keystroke.key.as_str();
@@ -1977,16 +2259,20 @@ impl App {
         let target = self.active_tile();
         let command = match key {
             "enter" => target.map(Command::MapNavigate),
-            "space" => target.map(Command::MapMark),
-            "backspace" | "escape" => Some(Command::MapUp),
+            "space" | "x" => target.map(Command::MapMark),
+            "backspace" | "u" => Some(Command::MapUp),
+            "escape" => {
+                self.map_escape(window, cx);
+                None
+            }
             "left" if modifiers.alt => Some(Command::MapBack),
             "right" if modifiers.alt => Some(Command::MapForward),
-            "left" | "right" | "up" | "down" => {
+            "left" | "right" | "up" | "down" | "h" | "j" | "k" | "l" => {
                 self.keyboard_target = true;
                 let direction = match key {
-                    "left" => (-1., 0.),
-                    "right" => (1., 0.),
-                    "up" => (0., -1.),
+                    "left" | "h" => (-1., 0.),
+                    "right" | "l" => (1., 0.),
+                    "up" | "k" => (0., -1.),
                     _ => (0., 1.),
                 };
                 let tiles = self
@@ -2069,28 +2355,53 @@ impl App {
                     .to_string(),
             )),
             "a" => Some(Command::MapColor(1 - self.runtime.view().map_color)),
-            "h" => Some(Command::Setting(
+            "i" => Some(Command::Setting(
                 Setting::ShowHidden,
                 (!self.runtime.view().settings.show_hidden).to_string(),
             )),
-            "i" => Some(Command::MapIsolate(!self.runtime.view().map_isolate)),
-            "g" => Some(Command::MapGlobal(!self.runtime.view().map_global)),
-            "f" | "/" => {
+            "t" => {
+                let view = self.runtime.view();
+                let size_metric = view.map_size_metric;
+                if view.map_color == 1 {
+                    self.dispatch(Command::MapColor(0), cx);
+                    Some(Command::MapMetric(size_metric))
+                } else if view.map_metric == 2 {
+                    self.dispatch(Command::MapMetric(size_metric), cx);
+                    Some(Command::MapColor(1))
+                } else {
+                    Some(Command::MapMetric(2))
+                }
+            }
+            "d" => Some(Command::MapSizeMetric(
+                1 - self.runtime.view().map_size_metric,
+            )),
+            "r" | "f5" if !self.runtime.view().busy => Some(Command::Scan(false)),
+            "g" if !self.runtime.view().busy => {
+                self.dispatch(Command::SetRoot(crate::platform::system_root()), cx);
+                Some(Command::Scan(false))
+            }
+            "v" => {
+                self.volumes_open = true;
+                window.focus(&self.dialog_focus, cx);
+                cx.notify();
+                None
+            }
+            "f" | "/" | "s" => {
                 self.search.focus_handle(cx).focus(window, cx);
                 None
             }
-            "e" => target
+            "e" | "o" => target
                 .and_then(|i| self.runtime.map_path(i))
                 .map(Command::Open),
-            "s" => {
-                self.export_marked(cx);
-                None
-            }
             "p" => {
-                self.copy_marked(cx);
+                self.details_open = !self.details_open;
+                cx.notify();
                 None
             }
-            "c" => Some(Command::ClearMarks),
+            "c" if self.runtime.view().can_manual && !self.runtime.view().busy => {
+                Some(Command::PreviewManual)
+            }
+            "q" => Some(Command::Exit),
             "?" | "f1" => {
                 self.keys_open = true;
                 cx.notify();
@@ -2117,6 +2428,7 @@ impl App {
             .test_support()
             .absolute()
             .inset_0()
+            .occlude()
             .flex()
             .items_center()
             .justify_center()
@@ -2183,6 +2495,17 @@ impl App {
                 );
             }
             details = details
+                .when(self.trash_notice, |details| {
+                    details.child(
+                        div()
+                            .id("review-trash-unsupported")
+                            .test_support()
+                            .flex_shrink_0()
+                            .text_color(self.palette().danger)
+                            .text_size(self.scaled(12.))
+                            .child(self.text("Keys.TrashUnsupported")),
+                    )
+                })
                 .child(warnings)
                 .child(
                     div()
@@ -2227,15 +2550,7 @@ impl App {
                         "review-request-delete",
                         self.text("Manual.Delete"),
                         |this, window, cx| {
-                            if let Some(review) = this.runtime.view().review.clone() {
-                                this.confirmation.request(
-                                    &review.id,
-                                    review.cleanup,
-                                    review.can_confirm,
-                                );
-                                window.focus(&this.dialog_focus, cx);
-                                cx.notify();
-                            }
+                            this.request_permanent_confirmation(window, cx);
                         },
                         cx,
                     )
@@ -2549,6 +2864,9 @@ impl Render for App {
             )
             .on_mouse_move(
                 cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                    if this.modal_open() {
+                        return;
+                    }
                     if this.sidebar_drag
                         && event.pressed_button == Some(gpui_kit::MouseButton::Left)
                     {
@@ -2580,46 +2898,7 @@ impl Render for App {
                 }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                let key = event.keystroke.key.as_str();
-                if key == "escape" {
-                    if this.confirmation.is_open() {
-                        this.confirmation.dismiss();
-                    } else if this.keys_open {
-                        this.keys_open = false;
-                    } else if this.siblings_open.is_some() {
-                        this.siblings_open = None;
-                    } else if this.export_disclosure {
-                        this.export_disclosure = false;
-                    } else if this.volumes_open {
-                        this.volumes_open = false;
-                    } else if this.runtime.view().review.is_some() {
-                        this.dispatch(Command::DismissReview, cx);
-                    } else if this.page == Page::Map {
-                        this.search
-                            .update(cx, |state, cx| state.set_value("", window, cx));
-                        this.dispatch(Command::MapSearch(String::new()), cx);
-                    }
-                    cx.notify();
-                } else if !this.confirmation.is_open()
-                    && this.runtime.view().review.is_none()
-                    && !this.keys_open
-                    && this.siblings_open.is_none()
-                {
-                    if event.keystroke.modifiers.control {
-                        match key {
-                            "+" | "=" => this.interface_zoom(1, cx),
-                            "-" => this.interface_zoom(-1, cx),
-                            "0" => this.interface_zoom(0, cx),
-                            "o" => this.choose_folder(cx),
-                            _ => return,
-                        }
-                    } else if key == "f5" && !this.runtime.view().busy {
-                        this.dispatch(Command::Scan(false), cx);
-                    } else {
-                        return;
-                    }
-                    cx.stop_propagation();
-                }
+                this.global_key(event, window, cx)
             }));
         if let Some(error) = view.error.clone() {
             root = root.child(

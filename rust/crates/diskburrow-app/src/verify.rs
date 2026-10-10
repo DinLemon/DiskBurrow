@@ -37,8 +37,12 @@ pub fn run(data: PathBuf, root: String, destination: &Path) -> Result<()> {
     );
     let mut runtime = Runtime::new(data)?;
     await_idle(&mut runtime)?;
-    runtime.command(Command::SetRoot(root));
-    runtime.command(Command::Scan(false));
+    runtime.apply_launch(crate::cli::LaunchOverrides {
+        root: Some(root),
+        ..Default::default()
+    })?;
+    let launch_opened_map = runtime.take_map_open();
+    ensure!(launch_opened_map, "Explicit launch did not request the map");
     await_idle(&mut runtime)?;
     ensure!(
         runtime.view().map_has_data,
@@ -105,7 +109,32 @@ pub fn run(data: PathBuf, root: String, destination: &Path) -> Result<()> {
         ));
         await_idle(&mut runtime)?;
     }
+    runtime.poll();
+    let forecast_deadline = Instant::now() + Duration::from_secs(15);
+    while runtime.forecast_pending() {
+        ensure!(
+            Instant::now() < forecast_deadline,
+            "Forecast verification timed out"
+        );
+        thread::sleep(Duration::from_millis(10));
+        runtime.poll();
+    }
+    ensure!(
+        runtime.view().review.is_none(),
+        "Read-only forecast created a deletion review"
+    );
+    let map_panel = serde_json::json!({
+        "explicit_launch_opened_map": launch_opened_map,
+        "marked_roots": runtime.view().map_marked.len(),
+        "marked_summary": runtime.view().map_marked_summary,
+        "forecast": runtime.view().map_forecast,
+        "forecast_worker_finished": !runtime.forecast_pending(),
+        "review_created": runtime.view().review.is_some(),
+        "recommendations": runtime.view().recommendations.len()
+    });
     let report = serde_json::json!({"product_version":env!("CARGO_PKG_VERSION"),"executable":std::env::current_exe()?,"ordinary_user":!crate::helper::is_elevated()?,"scan_root":snapshot.root,"traversal_completed":snapshot.traversal_completed,"directories":snapshot.directories.len(),"largest_files":snapshot.largest_files.len(),"issues":snapshot.issues.len(),"map_tiles":tiles.len(),"reclaim_tiles":tiles.iter().filter(|tile|tile.reclaim).count(),"map_categories":tiles.iter().map(|tile|tile.category).collect::<Vec<_>>(),"appearances":appearances,"display_projections":display_projections,"display_settings":display_settings,"age_bands":aged.iter().map(|tile|tile.age).collect::<Vec<_>>(),"selected_count":selected_count,"snapshot_export":snapshot_path,"verification_scope":"Real executable, ordinary metadata scan, live map geometry, indexed category/reclaim/recommendation/age/depth/hidden projections, system display settings and selected TXT export; no GUI clicks, UAC approval, deletion, tray or autostart"});
+    let mut report = report;
+    report["map_panel"] = map_panel;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

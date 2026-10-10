@@ -48,6 +48,35 @@ struct GitJob {
     cancel: Cancellation,
     join: JoinHandle<()>,
 }
+struct ForecastJob {
+    generation: u64,
+    scan_id: Uuid,
+    cancel: Cancellation,
+    join: JoinHandle<()>,
+}
+/// Keep canceled metadata leases owned until they are released, including spawn failure.
+struct ObservationBarrier(Vec<JoinHandle<()>>);
+impl ObservationBarrier {
+    fn wait(mut self) {
+        for join in self.0.drain(..) {
+            let _ = join.join();
+        }
+    }
+}
+impl Drop for ObservationBarrier {
+    fn drop(&mut self) {
+        for join in self.0.drain(..) {
+            let _ = join.join();
+        }
+    }
+}
+#[derive(Clone)]
+struct ForecastObservation {
+    space: VolumeSpace,
+    observed_utc: DateTime<Utc>,
+    projection: ManualReclaimProjection,
+    partial: bool,
+}
 #[derive(Default)]
 struct Analysis {
     classifications: Vec<EntryClassification>,
@@ -81,6 +110,11 @@ enum Work {
     Journal(Option<String>),
 }
 enum Event {
+    ForecastFinished {
+        generation: u64,
+        scan_id: Uuid,
+        observation: Option<ForecastObservation>,
+    },
     Finished(u64, Result<Work>),
     Progress(u64, Arc<CoreProgress>),
     GitFinished {
@@ -108,6 +142,13 @@ pub struct Runtime {
     git_job: Option<GitJob>,
     git_desired: Option<(u64, String)>,
     git_result: Option<(String, GitInspection)>,
+    forecast_generation: u64,
+    forecast_job: Option<ForecastJob>,
+    forecast_result: Option<ForecastObservation>,
+    forecast_attempted: bool,
+    pending_launch: Option<crate::cli::LaunchOverrides>,
+    scan_threads: Option<disktree_core::scan_threads::ScanThreads>,
+    map_open_requested: bool,
     refreshing_deletion: bool,
     snapshot: Option<Arc<ScanSnapshot>>,
     known_cache_roots: (String, String),
@@ -188,6 +229,10 @@ impl Runtime {
             cleanup_category: "All".into(),
             review: None,
             selected_count: 0,
+            map_marked: vec![],
+            map_marked_summary: String::new(),
+            map_forecast: String::new(),
+            map_covering_parent: String::new(),
             map_path: String::new(),
             map_breadcrumbs: vec![],
             map_parents: vec![],
@@ -199,6 +244,7 @@ impl Runtime {
             map_global: false,
             map_isolate: false,
             map_metric: 0,
+            map_size_metric: 0,
             map_color: 0,
             map_zoom: 1.0,
             map_has_data: false,
@@ -224,6 +270,13 @@ impl Runtime {
             git_job: None,
             git_desired: None,
             git_result: None,
+            forecast_generation: 0,
+            forecast_job: None,
+            forecast_result: None,
+            forecast_attempted: false,
+            pending_launch: None,
+            scan_threads: None,
+            map_open_requested: false,
             refreshing_deletion: false,
             snapshot: None,
             volume_observation: None,
@@ -286,10 +339,67 @@ impl Runtime {
     pub fn take_show(&mut self) -> bool {
         std::mem::take(&mut self.show_requested)
     }
+    pub fn take_map_open(&mut self) -> bool {
+        std::mem::take(&mut self.map_open_requested)
+    }
+    pub fn forecast_pending(&self) -> bool {
+        self.forecast_job.is_some()
+    }
+    pub fn queue_launch(&mut self, launch: crate::cli::LaunchOverrides) -> Result<()> {
+        launch.validate()?;
+        ensure!(!self.exiting, "Application is shutting down");
+        self.show_requested = true;
+        self.map_open_requested = true;
+        self.pending_launch = Some(launch);
+        Ok(())
+    }
+    pub fn apply_launch(&mut self, launch: crate::cli::LaunchOverrides) -> Result<()> {
+        launch.validate()?;
+        if self.view.busy {
+            return self.queue_launch(launch);
+        }
+        ensure!(!self.view.busy && !self.exiting, "Application is busy");
+        let root = launch
+            .root
+            .clone()
+            .unwrap_or_else(|| self.view.root.clone());
+        ensure!(
+            platform::is_local_path(&root),
+            "Only a confirmed local directory can be scanned"
+        );
+        let threads = launch
+            .threads
+            .map(|policy| {
+                policy.to_scan_threads(thread::available_parallelism().map_or(1, |n| n.get()))
+            })
+            .transpose()?;
+        self.command(Command::SetRoot(root));
+        if let Some(hidden) = launch.show_hidden {
+            self.view.settings.show_hidden = hidden;
+        }
+        if let Some(depth) = launch.depth {
+            self.view.settings.map_depth = depth;
+        }
+        if let Some(apparent) = launch.apparent_size {
+            self.view.map_size_metric = u8::from(apparent);
+        }
+        if launch.metric == Some(1) {
+            self.view.map_metric = 2;
+        } else if launch.metric == Some(0) || launch.apparent_size.is_some() {
+            self.view.map_metric = self.view.map_size_metric;
+        }
+        if threads.is_some() {
+            self.scan_threads = threads;
+        }
+        self.map_open_requested = true;
+        self.command(Command::Scan(false));
+        Ok(())
+    }
     pub fn should_exit(&self) -> bool {
         self.exiting
             && !self.coordinator.is_busy()
             && self.git_job.is_none()
+            && self.forecast_job.is_none()
             && self.journal_workers.iter().all(JoinHandle::is_finished)
     }
     fn label(&self, key: &str) -> String {
@@ -317,6 +427,8 @@ impl Runtime {
         self.map_cache.borrow_mut().take();
     }
     fn cancel(&mut self) {
+        self.invalidate_forecast();
+        self.forecast_attempted = true;
         self.coordinator.cancel();
         if let Some(active) = &self.active {
             active.cancel.cancel();
@@ -328,6 +440,95 @@ impl Runtime {
             job.cancel.cancel();
         }
         self.git_desired = None;
+    }
+    fn invalidate_forecast(&mut self) {
+        self.forecast_generation = self.forecast_generation.wrapping_add(1);
+        self.forecast_result = None;
+        self.forecast_attempted = false;
+        if let Some(job) = &self.forecast_job {
+            job.cancel.cancel();
+        }
+    }
+    fn start_forecast(&mut self) {
+        if self.forecast_job.is_some()
+            || self.forecast_attempted
+            || self.view.busy
+            || self.exiting
+            || self.marks.is_empty()
+        {
+            return;
+        }
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        if !equals_path(&snapshot.root, &self.view.root) {
+            return;
+        }
+        self.forecast_attempted = true;
+        let scan_id = snapshot.id;
+        let root = snapshot.root.clone();
+        let generation = self.forecast_generation;
+        let selected = self
+            .marks
+            .iter()
+            .cloned()
+            .take(ROW_LIMIT + 1)
+            .collect::<Vec<_>>();
+        let service = self.service.clone();
+        let cancel = Cancellation::default();
+        let child = cancel.clone();
+        let tx = self.tx.clone();
+        match thread::Builder::new()
+            .name("diskburrow-forecast".into())
+            .spawn(move || {
+                let observation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<ForecastObservation> {
+                        use diskburrow_windows::{NativeFileApi as _, WindowsNativeFileApi};
+                        let api = WindowsNativeFileApi;
+                        let before = api.inspect(&root)?;
+                        ensure!(
+                            before.attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) == 0,
+                            "Unsafe root"
+                        );
+                        let identity = before
+                            .identity
+                            .ok_or_else(|| anyhow::anyhow!("Unknown volume identity"))?;
+                        let plan = service.observe_manual(&selected, &child)?;
+                        ensure!(!child.is_cancelled(), "Cancelled");
+                        let space = platform::volume_space(&root)?;
+                        let after = api.inspect(&root)?;
+                        ensure!(
+                            after.identity.as_ref() == Some(&identity)
+                                && after.attributes == before.attributes,
+                            "Root changed"
+                        );
+                        ensure!(!child.is_cancelled(), "Cancelled");
+                        Ok(ForecastObservation {
+                            space,
+                            observed_utc: Utc::now(),
+                            projection: project_manual_reclaim(&plan, identity.volume),
+                            partial: !plan.warnings.is_empty(),
+                        })
+                    },
+                ))
+                .ok()
+                .and_then(Result::ok);
+                let _ = tx.send(Event::ForecastFinished {
+                    generation,
+                    scan_id,
+                    observation,
+                });
+            }) {
+            Ok(join) => {
+                self.forecast_job = Some(ForecastJob {
+                    generation,
+                    scan_id,
+                    cancel,
+                    join,
+                })
+            }
+            Err(_) => self.forecast_result = None,
+        }
     }
     fn clear_git(&mut self) {
         self.git_generation = self.git_generation.wrapping_add(1);
@@ -413,6 +614,9 @@ impl Runtime {
         let Admission::Started(token) = self.coordinator.begin(purpose) else {
             return;
         };
+        if deletion_root.is_some() {
+            self.invalidate_forecast();
+        }
         let cancel = Cancellation::default();
         let child = cancel.clone();
         let tx = self.tx.clone();
@@ -462,6 +666,7 @@ impl Runtime {
         match command {
             Command::SetRoot(root) => {
                 if root != self.view.root {
+                    self.invalidate_forecast();
                     self.invalidate_review();
                     self.clear_git();
                     self.marks.clear();
@@ -489,19 +694,24 @@ impl Runtime {
             Command::Setting(setting, value) => self.setting(setting, value),
             Command::SaveSettings => self.save_settings(),
             Command::Mark(path) => {
-                if self.live.as_ref().is_some_and(|index| {
-                    index
-                        .entries
-                        .iter()
-                        .enumerate()
-                        .any(|(i, _)| index.path(i).eq_ignore_ascii_case(&path))
-                }) {
-                    self.invalidate_review();
-                    let key = path.to_lowercase();
-                    if !self.marks.remove(&key) {
-                        self.marks.insert(key);
+                let Some(path) = normalize_local_path(&path) else {
+                    return;
+                };
+                if !self.view.busy
+                    && let Some(live) = &self.live
+                    && let Some(index) = Self::find_map_path(live, &path)
+                    && live.entries[index].attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) == 0
+                {
+                    match crate::mark_selection::toggle(&mut self.marks, &path) {
+                        crate::mark_selection::MarkChange::Added { .. }
+                        | crate::mark_selection::MarkChange::Removed => {
+                            self.invalidate_review();
+                            self.invalidate_forecast();
+                            self.map_changed();
+                        }
+                        crate::mark_selection::MarkChange::Covered { .. }
+                        | crate::mark_selection::MarkChange::Invalid => {}
                     }
-                    self.map_changed();
                 }
             }
             Command::PreviewManual => self.preview_manual(),
@@ -563,9 +773,12 @@ impl Runtime {
             Command::Export(destination) => self.export(destination),
             Command::ExportSelection(destination) => self.export_selection(destination),
             Command::ClearMarks => {
-                self.marks.clear();
-                self.invalidate_review();
-                self.map_changed();
+                if !self.marks.is_empty() {
+                    self.marks.clear();
+                    self.invalidate_review();
+                    self.invalidate_forecast();
+                    self.map_changed();
+                }
             }
             Command::MapColor(color) => {
                 if color <= 1 {
@@ -627,6 +840,10 @@ impl Runtime {
                 }
                 self.select_git();
             }
+            Command::MapDismissFocus => {
+                self.nav.focused = None;
+                self.clear_git();
+            }
             Command::MapMark(index) => {
                 if let Some(live) = &self.live
                     && index < live.entries.len()
@@ -650,6 +867,18 @@ impl Runtime {
             Command::MapMetric(metric) => {
                 if metric <= 2 {
                     self.view.map_metric = metric;
+                    if metric <= 1 {
+                        self.view.map_size_metric = metric;
+                    }
+                    self.map_changed();
+                }
+            }
+            Command::MapSizeMetric(metric) => {
+                if metric <= 1 {
+                    self.view.map_size_metric = metric;
+                    if self.view.map_metric <= 1 {
+                        self.view.map_metric = metric;
+                    }
                     self.map_changed();
                 }
             }
@@ -845,6 +1074,7 @@ impl Runtime {
         self.start_scan_root(fast, root, None);
     }
     fn start_scan_root(&mut self, fast: bool, root: String, focus_path: Option<String>) {
+        self.invalidate_forecast();
         let cache = if focus_path.is_some() {
             self.scan_cache.clone()
         } else {
@@ -854,6 +1084,7 @@ impl Runtime {
         self.clear_git();
         let started = Utc::now();
         let data = self.data_dir.clone();
+        let scan_threads = self.scan_threads.clone();
         self.spawn(
             Purpose::Scan {
                 root: root.clone(),
@@ -877,6 +1108,9 @@ impl Runtime {
                     let known = cache.as_ref().and_then(|cache| cache.known_for(&root));
                     reused = known.is_some();
                     let mut options = ScanOptions::default();
+                    if let Some(threads) = scan_threads {
+                        options.threads = threads;
+                    }
                     if reused && let Some(cache) = &cache {
                         options.maximum_entries =
                             options.maximum_entries.saturating_sub(cache.entries);
@@ -1058,9 +1292,23 @@ impl Runtime {
         };
         let service = self.service.clone();
         let selected = self.reviewed_cleanup.clone();
+        self.invalidate_forecast();
+        self.clear_git();
+        let mut observations = Vec::new();
+        if let Some(job) = self.forecast_job.take() {
+            job.cancel.cancel();
+            observations.push(job.join);
+        }
+        if let Some(job) = self.git_job.take() {
+            job.cancel.cancel();
+            observations.push(job.join);
+        }
+        let barrier = ObservationBarrier(observations);
         self.manual_plan = None;
         self.reviewed_cleanup.clear();
         self.spawn(Purpose::Cleanup, "Status.Cleaning", move |cancel, _, _| {
+            barrier.wait();
+            ensure!(!cancel.is_cancelled(), "Cancelled");
             Ok(Work::Deleted(if cleanup {
                 service.execute_cleanup(id, &selected, true, &cancel)?
             } else {
@@ -1187,14 +1435,13 @@ impl Runtime {
         if !is_within(path, &live.root) {
             return None;
         }
-        let root = live.root.trim_end_matches('\\');
-        let suffix = path.get(root.len()..)?.trim_start_matches('\\');
+        let components = live.root.trim_end_matches('\\').split('\\').count();
         let mut current = 0;
-        for name in suffix.split('\\') {
+        for name in path.trim_end_matches('\\').split('\\').skip(components) {
             current = *live.entries[current]
                 .children
                 .iter()
-                .find(|i| live.entries[**i].name.eq_ignore_ascii_case(name))?;
+                .find(|i| equals_path(&live.entries[**i].name, name))?;
         }
         Some(current)
     }
@@ -1280,6 +1527,27 @@ impl Runtime {
         let old_status = self.view.status.clone();
         let old_error = self.view.error.clone();
         let mut dirty = false;
+        let launches = self
+            .bridge
+            .as_ref()
+            .map(|bridge| {
+                std::iter::from_fn(|| bridge.try_recv_launch())
+                    .take(16)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for payload in launches {
+            match serde_json::from_str::<crate::cli::LaunchOverrides>(&payload)
+                .map_err(anyhow::Error::from)
+                .and_then(|launch| self.queue_launch(launch))
+            {
+                Ok(()) => dirty = true,
+                Err(error) => {
+                    self.error(error);
+                    dirty = true;
+                }
+            }
+        }
         let events: Vec<_> = self
             .platform_rx
             .as_ref()
@@ -1301,6 +1569,28 @@ impl Runtime {
         }
         while let Ok(event) = self.rx.try_recv() {
             match event {
+                Event::ForecastFinished {
+                    generation,
+                    scan_id,
+                    observation,
+                } => {
+                    if self
+                        .forecast_job
+                        .as_ref()
+                        .is_some_and(|job| job.generation == generation && job.scan_id == scan_id)
+                    {
+                        let job = self.forecast_job.take().unwrap();
+                        let publish = !job.cancel.is_cancelled()
+                            && generation == self.forecast_generation
+                            && self.scan_id() == Some(scan_id)
+                            && !self.exiting;
+                        let _ = job.join.join();
+                        if publish {
+                            self.forecast_result = observation;
+                            dirty = true;
+                        }
+                    }
+                }
                 Event::GitFinished {
                     generation,
                     path,
@@ -1431,6 +1721,18 @@ impl Runtime {
             );
         }
         self.journal_workers.retain(|join| !join.is_finished());
+        if !self.view.busy
+            && !self.exiting
+            && let Some(launch) = self.pending_launch.take()
+        {
+            if let Err(error) = self.apply_launch(launch) {
+                self.error(error);
+            }
+            dirty = true;
+        }
+        let had_forecast = self.forecast_job.is_some();
+        self.start_forecast();
+        dirty |= had_forecast != self.forecast_job.is_some();
         if self.monitoring && !self.exiting && Instant::now() >= self.next_monitor {
             self.next_monitor = Instant::now() + Duration::from_secs(1);
             let root = platform::system_root();
@@ -1489,6 +1791,7 @@ impl Runtime {
                     String::new()
                 };
                 self.analysis = analysis;
+                self.invalidate_forecast();
                 self.clear_git();
                 self.snapshot = Some(snapshot.clone());
                 self.nav = MapNavigation::new();
@@ -1683,13 +1986,43 @@ impl Runtime {
         self.marks.contains(&path.to_lowercase())
     }
     fn covered(&self, path: &str) -> bool {
-        self.marks
-            .iter()
-            .any(|root| !root.eq_ignore_ascii_case(path) && is_within(path, root))
+        crate::mark_selection::covered_ancestor(&self.marks, path).is_some()
     }
     fn rebuild(&mut self) {
         let language = self.view.settings.language.clone();
         self.view.selected_count = self.marks.len();
+        self.view.map_marked = self
+            .marks
+            .iter()
+            .take(ROW_LIMIT)
+            .map(|key| {
+                let path = self
+                    .live
+                    .as_ref()
+                    .and_then(|live| Self::find_map_path(live, key).map(|i| live.path(i)))
+                    .unwrap_or_else(|| key.clone());
+                Row {
+                    key: path.clone(),
+                    path,
+                    selected: true,
+                    selectable: !self.view.busy,
+                    cells: vec![],
+                }
+            })
+            .collect();
+        self.view.map_marked.sort_by(|a, b| a.path.cmp(&b.path));
+        self.view.map_marked_summary = if self.marks.is_empty() {
+            self.label("Map.NoMarks")
+        } else {
+            format!(
+                "{}: {} · {}: {}",
+                self.label("Map.Marked"),
+                self.marks.len(),
+                self.label("Map.Displayed"),
+                self.view.map_marked.len()
+            )
+        };
+        self.rebuild_forecast();
         self.view.can_manual = !self.view.busy && !self.marks.is_empty();
         self.view.can_cleanup = !self.view.busy && !self.cleanup_selection.is_empty();
         if let Some(snapshot) = &self.snapshot {
@@ -1783,8 +2116,8 @@ impl Runtime {
                 .map(|d| Row {
                     key: d.path.clone(),
                     path: d.path.clone(),
-                    selected: self.marked(&d.path),
-                    selectable: d.path != snapshot.root,
+                    selected: self.marked(&d.path) || self.covered(&d.path),
+                    selectable: d.path != snapshot.root && !self.covered(&d.path),
                     cells: vec![
                         gb(d.logical_bytes, &language),
                         d.allocated_bytes
@@ -1800,8 +2133,9 @@ impl Runtime {
                 .map(|f| Row {
                     key: f.path.clone(),
                     path: f.path.clone(),
-                    selected: self.marked(&f.path),
-                    selectable: f.attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) == 0,
+                    selected: self.marked(&f.path) || self.covered(&f.path),
+                    selectable: !self.covered(&f.path)
+                        && f.attributes & (0x400 | 0x1000 | 0x40000 | 0x400000) == 0,
                     cells: vec![
                         gb(f.logical_bytes, &language),
                         f.allocated_bytes
@@ -2131,7 +2465,76 @@ impl Runtime {
             .collect();
         self.rebuild_focus();
     }
+    fn rebuild_forecast(&mut self) {
+        let language = &self.view.settings.language;
+        self.view.map_forecast = if let Some(observation) = &self.forecast_result {
+            let projection = &observation.projection;
+            let excluded = projection.excluded_hardlink_files
+                + projection.excluded_unknown_files
+                + projection.excluded_foreign_files;
+            let known = gb(projection.known_reclaim_bytes, language);
+            let after = if observation.partial || excluded > 0 {
+                self.label("Unknown")
+            } else {
+                gb(
+                    observation
+                        .space
+                        .free_bytes
+                        .saturating_add(projection.known_reclaim_bytes)
+                        .min(observation.space.total_bytes),
+                    language,
+                )
+            };
+            format!(
+                "{}: {}\n{}: {}\n{}: {}\n{}: {}\n{} · {}\n{}{}",
+                self.label("Overview.Free"),
+                gb(observation.space.free_bytes, language),
+                self.label("Reclaim.Known"),
+                known,
+                self.label("Map.FreeAfter"),
+                after,
+                self.label("Reclaim.Excluded"),
+                excluded,
+                self.label("Overview.CountersObserved"),
+                time(observation.observed_utc, language),
+                self.label("Reclaim.Note"),
+                if observation.partial {
+                    format!("\n{}", self.label("Map.ForecastPartial"))
+                } else {
+                    String::new()
+                }
+            )
+        } else {
+            let free = self
+                .volume_observation
+                .as_ref()
+                .filter(|o| equals_path(&o.root, &self.view.root))
+                .map(|o| {
+                    format!(
+                        "{}: {}\n{} · {}\n",
+                        self.label("Overview.Free"),
+                        gb(o.space.free_bytes, language),
+                        self.label("Overview.CountersObserved"),
+                        time(o.observed_utc, language)
+                    )
+                })
+                .unwrap_or_default();
+            let key = if self.marks.is_empty() {
+                "Map.NoMarks"
+            } else if self
+                .forecast_job
+                .as_ref()
+                .is_some_and(|job| job.generation == self.forecast_generation)
+            {
+                "Map.ForecastPending"
+            } else {
+                "Map.ForecastUnknown"
+            };
+            format!("{free}{}", self.label(key))
+        };
+    }
     fn rebuild_focus(&mut self) {
+        self.view.map_covering_parent.clear();
         self.view.focused_path.clear();
         self.view.focused_summary.clear();
         self.view.git_summary.clear();
@@ -2142,6 +2545,13 @@ impl Runtime {
             && let Some(entry) = index.entries.get(focused)
         {
             self.view.focused_path = index.path(focused);
+            if let Some(parent) =
+                crate::mark_selection::covered_ancestor(&self.marks, &self.view.focused_path)
+            {
+                self.view.map_covering_parent = Self::find_map_path(index, &parent)
+                    .map(|i| index.path(i))
+                    .unwrap_or(parent);
+            }
             self.view.focused_summary = format!(
                 "{} · {} · {} {} · {}",
                 gb(entry.logical, &self.view.settings.language),
@@ -2287,6 +2697,9 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.cancel();
+        if let Some(job) = self.forecast_job.take() {
+            let _ = job.join.join();
+        }
         if let Some(job) = self.git_job.take() {
             let _ = job.join.join();
         }

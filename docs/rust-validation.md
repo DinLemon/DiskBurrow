@@ -1,4 +1,34 @@
-# Rust client validation — 2026-10-09
+# Rust client validation — 2026-10-10
+
+## Alpha.6 map panel, hierarchical marks and compatible launch candidate
+
+The map sidebar adds marked outermost roots, observed free space, asynchronous
+conditional physical reclaim/free-after projection and informational recommendations.
+Parent marks absorb descendants; covered children identify the parent and offer
+unmarking that parent. Covered toggles preserve a valid manual review.
+
+The forecast uses a separate unissued native observation, never normal preview
+authority. It excludes unknown/foreign allocation and multi-link identities, and
+checks scan UUID, selection generation, cancellation and root identity before
+publication. Limits are 2000 roots, 100000 paths, 64 MiB conservative metadata
+reservations, 1 MiB selected input, 16 KiB per path, depth64 and a shared cooperative
+3-second deadline between OS calls. A single OS call cannot be forcibly preempted.
+Partial/unknown metadata does not promise final free space. Confirmed deletion
+waits in its background worker for canceled observation/Git leases to be released;
+busy launch requests cannot interrupt a deletion attempt.
+
+Compatible map/manual-review shortcuts retain editor/modal and separate-confirmation
+priority. Positional Unicode/relative folders, disk/display/worker flags and the
+existing diagnostic switches resolve in the sender and open an ordinary scan/map.
+Second normal launches forward only strict read-only overrides via local native
+message pipes: same SID/executable peers, remote rejection, bounded 16-message queue,
+64 KiB messages and a shared 3-second client deadline. Root validation caps paths at
+64 components and 16 KiB before metadata; pinned ancestors are opened sequentially.
+The helper remains a separate exact grammar; `--` positional data cannot activate it.
+
+Final full-suite, immutable review, portable EXE and hosted CI results are recorded
+with the exact source revision in the candidate's verification artifacts. Programmatic
+frames and actual EXE checks are distinct from manual UAC/tray/logon acceptance.
 
 ## Alpha.5 navigation/display candidate
 

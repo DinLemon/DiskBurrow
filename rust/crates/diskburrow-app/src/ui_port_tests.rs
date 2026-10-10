@@ -698,20 +698,22 @@ fn port_native_editors_keep_typing_and_do_not_dispatch_map_letter_shortcuts(
         window.click("nav-map", cx);
         window.click("map-viewport", cx);
         window.click("map-search", cx);
-        window.input("ahigc[]", cx);
+        window.input("ahigc[]xhjkltdvpoqrus?", cx);
         window.press("backspace", cx);
     })
     .unwrap();
     handle
         .update(cx, |app, _, cx| {
-            assert_eq!(app.search.read(cx).value(), "ahigc[");
-            assert_eq!(app.runtime.view().map_query, "ahigc[");
+            assert_eq!(app.search.read(cx).value(), "ahigc[]xhjkltdvpoqrus");
+            assert_eq!(app.runtime.view().map_query, "ahigc[]xhjkltdvpoqrus");
             assert_eq!(app.runtime.view().map_color, 0);
             assert_eq!(app.runtime.view().settings.map_depth, 3);
             assert!(app.runtime.view().settings.show_hidden);
             assert!(!app.runtime.view().map_isolate);
             assert!(!app.runtime.view().map_global);
             assert!(!app.keys_open);
+            assert!(!app.volumes_open);
+            assert!(!app.runtime.should_exit());
         })
         .unwrap();
     let root_value = fixture.path().join("ahigc").to_string_lossy().into_owned();
@@ -775,4 +777,604 @@ fn port_help_blocks_map_shortcuts_and_escape_closes_overlay(cx: &mut TestAppCont
             assert_eq!(app.runtime.view().settings.map_depth, 3);
         })
         .unwrap();
+}
+
+#[gpui_kit::test]
+fn panel_upstream_mark_hidden_and_metric_keys_dispatch_from_canvas(cx: &mut TestAppContext) {
+    let fixture = owned_fixture();
+    let runtime = scanned_runtime(fixture.path(), "en", 100);
+    cx.update(gpui_omarchy::init);
+    let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+        App::new(runtime, window, cx)
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("nav-map", cx);
+        window.click("map-viewport", cx);
+    })
+    .unwrap();
+    handle
+        .update(cx, |app, _, cx| {
+            let index = app
+                .runtime
+                .view()
+                .map_objects
+                .iter()
+                .find(|r| r.path.ends_with("\\alpha"))
+                .unwrap()
+                .key
+                .parse()
+                .unwrap();
+            app.focused_tile = Some(index);
+            app.keyboard_target = true;
+            app.dispatch(Command::MapFocus(index), cx);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press("x", cx))
+        .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(
+                app.runtime.view().selected_count,
+                1,
+                "x marks the focused object"
+            )
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press("i", cx))
+        .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert!(
+                !app.runtime.view().settings.show_hidden,
+                "i controls hidden projection"
+            );
+            assert!(!app.runtime.view().map_isolate, "i must not isolate");
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press("t", cx))
+        .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(app.runtime.view().map_metric, 2, "t cycles to Files")
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press("d", cx))
+        .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(app.runtime.view().map_metric, 2, "d keeps the Files metric");
+            assert_eq!(
+                app.runtime.view().map_size_metric,
+                1,
+                "d changes the retained byte basis"
+            );
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press("t", cx))
+        .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(app.runtime.view().map_color, 1, "t cycles to Age")
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press("t", cx))
+        .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(app.runtime.view().map_metric, 1);
+            assert_eq!(app.runtime.view().map_color, 0);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press("d", cx))
+        .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(
+                app.runtime.view().map_metric,
+                0,
+                "d switches back to allocated size"
+            )
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn panel_review_shortcuts_keep_marks_and_require_separate_confirmation(cx: &mut TestAppContext) {
+    let fixture = owned_fixture();
+    let mut runtime = scanned_runtime(fixture.path(), "en", 100);
+    let file = fixture.path().join("scan").join("alpha").join("first.bin");
+    runtime.command(Command::Mark(file.to_string_lossy().into_owned()));
+    assert_eq!(
+        runtime.view().selected_count,
+        1,
+        "review fixture is marked before opening UI"
+    );
+    cx.update(gpui_omarchy::init);
+    let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+        App::new(runtime, window, cx)
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("nav-map", cx);
+        window.click("map-viewport", cx);
+        window.press("c", cx);
+    })
+    .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(
+                app.runtime.view().selected_count,
+                1,
+                "c opens review without clearing marks"
+            );
+            assert!(app.runtime.view().busy || app.runtime.view().review.is_some());
+        })
+        .unwrap();
+    handle
+        .update(cx, |app, _, cx| {
+            idle(&mut app.runtime);
+            cx.notify();
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("review-modal").visible());
+        window.press("s", cx);
+        window.press("a", cx);
+    })
+    .unwrap();
+    assert!(
+        cx.did_prompt_for_new_path(),
+        "review s opens the existing TXT picker"
+    );
+    assert!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .is_some_and(|text| text.contains("first.bin")),
+        "review a copies the selected prompt"
+    );
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("enter", cx);
+        assert!(window.find("permanent-dialog").visible());
+        window.press("enter", cx);
+        assert!(
+            window.find("permanent-dialog").visible(),
+            "held/repeated Enter never commits deletion"
+        );
+        window.press("escape", cx);
+        assert!(window.try_find("permanent-dialog").is_none());
+        assert!(window.find("review-modal").visible());
+        window.press("m", cx);
+        assert!(window.find("review-trash-unsupported").visible());
+        window.press("p", cx);
+        window.press("!", cx);
+    })
+    .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(app.runtime.view().selected_count, 0);
+            assert!(app.runtime.view().review.is_none());
+        })
+        .unwrap();
+    assert_eq!(std::fs::metadata(file).unwrap().len(), 16384);
+}
+
+#[gpui_kit::test]
+fn panel_minimum_sidebar_marks_forecast_and_recommendations_remain_reachable(
+    cx: &mut TestAppContext,
+) {
+    let fixture = owned_fixture();
+    cx.update(gpui_omarchy::init);
+    for language in ["ru", "en"] {
+        for scale in [75, 100, 150] {
+            let mut runtime = scanned_runtime(fixture.path(), language, scale);
+            runtime.command(Command::Mark(
+                fixture
+                    .path()
+                    .join("scan")
+                    .join("alpha")
+                    .to_string_lossy()
+                    .into_owned(),
+            ));
+            assert_eq!(
+                runtime.view().selected_count,
+                1,
+                "sidebar fixture is marked before opening UI"
+            );
+            let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+                App::new(runtime, window, cx)
+            });
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("nav-map", cx);
+                inside_minimum_window(window, "map-viewport");
+                assert!(window.find("map-viewport").bounds().size.height >= px(180.));
+                for target in [
+                    "map-marked-summary",
+                    "map-marked-root-0",
+                    "map-clear-marks",
+                    "map-forecast-summary",
+                    "map-recommendations-title",
+                ] {
+                    scroll_to(window, "map-sidebar", target, cx);
+                    inside_minimum_window(window, target);
+                }
+                scroll_to(window, "map-sidebar", "map-marked-root-0", cx);
+                window.click("map-marked-root-0", cx);
+            })
+            .unwrap();
+            handle
+                .update(cx, |app, _, _| {
+                    assert_eq!(app.runtime.view().selected_count, 0)
+                })
+                .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn panel_launch_opens_map_initially_and_after_queued_root_poll(cx: &mut TestAppContext) {
+    let fixture = owned_fixture();
+    let mut runtime = scanned_runtime(fixture.path(), "en", 100);
+    let scan = fixture.path().join("scan");
+    runtime
+        .apply_launch(crate::cli::LaunchOverrides {
+            root: Some(scan.to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .unwrap();
+    idle(&mut runtime);
+    cx.update(gpui_omarchy::init);
+    let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+        App::new(runtime, window, cx)
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        inside_minimum_window(window, "map-viewport");
+    })
+    .unwrap();
+    let next = scan.join("beta").to_string_lossy().into_owned();
+    handle
+        .update(cx, |app, _, cx| {
+            assert_eq!(app.page, Page::Map);
+            app.page = Page::Overview;
+            app.runtime
+                .queue_launch(crate::cli::LaunchOverrides {
+                    root: Some(next.clone()),
+                    ..Default::default()
+                })
+                .unwrap();
+            cx.notify();
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    handle
+        .update(cx, |app, _, cx| {
+            assert_eq!(
+                app.page,
+                Page::Map,
+                "the owned UI poll opens queued explicit launches"
+            );
+            assert_eq!(app.runtime.view().root, next);
+            idle(&mut app.runtime);
+            cx.notify();
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        inside_minimum_window(window, "map-viewport");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn panel_escape_clears_query_then_focus_then_ascends_without_touching_marks(
+    cx: &mut TestAppContext,
+) {
+    let fixture = owned_fixture();
+    let runtime = scanned_runtime(fixture.path(), "en", 100);
+    cx.update(gpui_omarchy::init);
+    let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+        App::new(runtime, window, cx)
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("nav-map", cx);
+    })
+    .unwrap();
+    let alpha = fixture
+        .path()
+        .join("scan")
+        .join("alpha")
+        .to_string_lossy()
+        .into_owned();
+    handle
+        .update(cx, |app, _, cx| {
+            let index = app
+                .runtime
+                .view()
+                .map_objects
+                .iter()
+                .find(|row| row.path == alpha)
+                .unwrap()
+                .key
+                .parse()
+                .unwrap();
+            app.dispatch(Command::MapNavigate(index), cx);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("map-viewport", cx);
+        window.press("x", cx);
+        window.press("s", cx);
+        window.input("first", cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert!(app.runtime.view().map_query.is_empty());
+            assert_eq!(app.runtime.view().map_path, alpha);
+            assert_eq!(app.runtime.view().selected_count, 1);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert!(app.active_tile().is_none());
+            assert!(app.runtime.view().focused_path.is_empty());
+            assert_eq!(app.runtime.view().map_path, alpha);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(
+                app.runtime.view().map_path,
+                fixture.path().join("scan").to_string_lossy()
+            );
+            assert_eq!(app.runtime.view().selected_count, 1);
+        })
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn panel_covered_parent_unmark_action_and_hidden_marks_are_explicit(cx: &mut TestAppContext) {
+    let fixture = owned_fixture();
+    let alpha = fixture.path().join("scan").join("alpha");
+    std::fs::create_dir_all(&alpha).unwrap();
+    let path = crate::platform::wide(alpha.to_str().unwrap());
+    let previous =
+        unsafe { windows_sys::Win32::Storage::FileSystem::GetFileAttributesW(path.as_ptr()) };
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(
+                path.as_ptr(),
+                previous | windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN,
+            )
+        },
+        0
+    );
+    let mut runtime = scanned_runtime(fixture.path(), "en", 100);
+    runtime.command(Command::Mark(alpha.to_string_lossy().into_owned()));
+    cx.update(gpui_omarchy::init);
+    let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+        App::new(runtime, window, cx)
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("nav-map", cx);
+        window.click("map-viewport", cx);
+    })
+    .unwrap();
+    handle
+        .update(cx, |app, _, cx| {
+            let index = app
+                .map_tiles
+                .borrow()
+                .iter()
+                .find(|tile| {
+                    tile.name == "first.bin"
+                        && app
+                            .runtime
+                            .map_path(tile.index)
+                            .is_some_and(|p| p.contains("\\alpha\\"))
+                })
+                .unwrap()
+                .index;
+            app.focused_tile = Some(index);
+            app.keyboard_target = true;
+            app.dispatch(Command::MapFocus(index), cx);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("space", cx);
+        scroll_to(window, "map-sidebar", "map-unmark-parent", cx);
+        inside_minimum_window(window, "map-unmark-parent");
+        window.click("map-unmark-parent", cx);
+    })
+    .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(app.runtime.view().selected_count, 0)
+        })
+        .unwrap();
+    handle
+        .update(cx, |app, _, cx| {
+            app.dispatch(Command::Mark(alpha.to_string_lossy().into_owned()), cx);
+        })
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("map-viewport", cx);
+        window.press("i", cx);
+        scroll_to(window, "map-sidebar", "map-marked-root-0", cx);
+        inside_minimum_window(window, "map-marked-root-0");
+    })
+    .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(app.runtime.view().selected_count, 1);
+            assert!(!app.runtime.view().settings.show_hidden);
+            assert!(
+                !app.map_tiles
+                    .borrow()
+                    .iter()
+                    .any(|tile| tile.name == "alpha")
+            );
+            assert_eq!(
+                app.runtime.view().map_marked[0].path,
+                alpha.to_string_lossy()
+            );
+        })
+        .unwrap();
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(path.as_ptr(), previous)
+        },
+        0
+    );
+}
+
+#[gpui_kit::test]
+fn panel_sidebar_recommendation_click_navigates_without_marks_or_review(cx: &mut TestAppContext) {
+    let fixture = owned_fixture();
+    let cache = fixture.path().join("scan").join(".cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    let file = cache.join("large-owned-fixture.bin");
+    std::fs::File::create(&file)
+        .unwrap()
+        .set_len(72 * 1024 * 1024)
+        .unwrap();
+    let runtime = scanned_runtime(fixture.path(), "en", 100);
+    assert_eq!(runtime.view().recommendations.len(), 1);
+    cx.update(gpui_omarchy::init);
+    let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+        App::new(runtime, window, cx)
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("nav-map", cx);
+        scroll_to(window, "map-sidebar", "map-recommendation-0", cx);
+        window.click("map-recommendation-0", cx);
+    })
+    .unwrap();
+    handle
+        .update(cx, |app, _, _| {
+            assert_eq!(app.runtime.view().map_path, cache.to_string_lossy());
+            assert_eq!(app.runtime.view().selected_count, 0);
+            assert!(app.runtime.view().review.is_none());
+        })
+        .unwrap();
+    assert!(file.exists());
+}
+
+#[gpui_kit::test]
+fn panel_modal_backdrops_block_canvas_mouse_marks_navigation_and_scroll(cx: &mut TestAppContext) {
+    let fixture = owned_fixture();
+    cx.update(gpui_omarchy::init);
+    for permanent in [false, true] {
+        let mut runtime = scanned_runtime(fixture.path(), "en", 100);
+        let selected = fixture.path().join("scan").join("alpha").join("first.bin");
+        runtime.command(Command::Mark(selected.to_string_lossy().into_owned()));
+        let handle = cx.open_window(size(px(880.), px(600.)), |window, cx| {
+            App::new(runtime, window, cx)
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("nav-map", cx);
+            window.click("map-viewport", cx);
+            window.press("c", cx);
+        })
+        .unwrap();
+        handle
+            .update(cx, |app, _, cx| {
+                idle(&mut app.runtime);
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            if permanent {
+                window.press("enter", cx);
+            }
+            let viewport = window.find("map-viewport").bounds();
+            let at = point(viewport.left() + px(4.), viewport.bottom() - px(4.));
+            let footer = window
+                .find(if permanent {
+                    "permanent-cancel"
+                } else {
+                    "review-close"
+                })
+                .bounds();
+            assert!(
+                at.y > footer.bottom() + px(16.),
+                "fixture must click below the popup footer and padding: viewport={viewport:?}, footer={footer:?}, at={at:?}"
+            );
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                    button: gpui_kit::MouseButton::Left,
+                    position: at,
+                    click_count: 1,
+                    modifiers: gpui_kit::Modifiers {
+                        control: true,
+                        ..Default::default()
+                    },
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                    button: gpui_kit::MouseButton::Navigate(gpui_kit::NavigationDirection::Back),
+                    position: at,
+                    click_count: 1,
+                    modifiers: Default::default(),
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui_kit::PlatformInput::ScrollWheel(gpui_kit::ScrollWheelEvent {
+                    position: at,
+                    delta: gpui_kit::ScrollDelta::Lines(point(0., 2.)),
+                    ..Default::default()
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+        handle
+            .update(cx, |app, _, _| {
+                assert_eq!(
+                    app.runtime.view().selected_count,
+                    1,
+                    "modal mouse input cannot change marks"
+                );
+                assert!(
+                    app.runtime.view().review.is_some(),
+                    "modal mouse input cannot dismiss its review"
+                );
+                assert_eq!(
+                    app.runtime.view().map_path,
+                    fixture.path().join("scan").to_string_lossy()
+                );
+                assert_eq!(
+                    app.transform.scale, 1.,
+                    "modal scroll cannot change map zoom"
+                );
+                assert_eq!(app.confirmation.is_open(), permanent);
+            })
+            .unwrap();
+        assert_eq!(std::fs::metadata(selected).unwrap().len(), 16384);
+    }
 }

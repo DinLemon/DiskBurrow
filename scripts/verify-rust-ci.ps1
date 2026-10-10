@@ -74,6 +74,11 @@ try {
         throw 'Display and selected-export proof incomplete.'
     }
     $selectedPath = Join-Path $fixture 'runtime.selected.txt'
+    if (-not $proof.map_panel.explicit_launch_opened_map -or
+        $proof.map_panel.marked_roots -ne 1 -or -not $proof.map_panel.forecast_worker_finished -or
+        $proof.map_panel.review_created -or [string]::IsNullOrWhiteSpace($proof.map_panel.forecast)) {
+        throw 'Map-panel launch, marked selection or read-only forecast proof incomplete.'
+    }
     $selected = [IO.File]::ReadAllText($selectedPath, [Text.UTF8Encoding]::new($false, $true))
     if ([string]::IsNullOrWhiteSpace($selected) -or $selected -notmatch 'large\.bin') {
         throw 'Selected UTF-8 export does not contain the indexed fixture.'

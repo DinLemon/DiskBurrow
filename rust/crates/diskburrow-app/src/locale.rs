@@ -98,6 +98,56 @@ pub fn text(language: &str, key: &str) -> String {
 
 // Imported verbatim from the original 0.2.2 WPF locale resources.
 const EXTRA_TRANSLATIONS: &[(&str, &str, &str)] = &[
+    ("Map.Marked", "Отмеченное", "Marked roots"),
+    ("Map.Forecast", "Прогноз места", "Space forecast"),
+    (
+        "Map.CoveredHint",
+        "Включено целиком выбранной папкой; ребёнка нельзя исключить отдельно",
+        "Included by the marked parent; a child cannot be excluded separately",
+    ),
+    (
+        "Map.UnmarkParent",
+        "Снять отметку с родителя",
+        "Unmark parent",
+    ),
+    (
+        "Map.NoMarks",
+        "Нет отмеченных объектов",
+        "No marked objects",
+    ),
+    ("Map.ClearMarks", "Снять все отметки", "Clear all marks"),
+    ("Map.Recommendations", "Стоит посмотреть", "Worth a look"),
+    ("Map.Displayed", "Показано", "Displayed"),
+    (
+        "Map.FreeAfter",
+        "Свободно после успешного удаления",
+        "Free after successful deletion",
+    ),
+    (
+        "Map.ForecastPartial",
+        "Данные неполные; итоговое освобождение неизвестно",
+        "Incomplete metadata; final reclaim is unknown",
+    ),
+    (
+        "Map.ForecastPending",
+        "Проверка метаданных для прогноза…",
+        "Checking metadata for the forecast…",
+    ),
+    (
+        "Map.ForecastUnknown",
+        "Прогноз неизвестен; нужен свежий предпросмотр",
+        "Forecast unknown; a fresh review is required",
+    ),
+    (
+        "Manual.ObservationLimit",
+        "Достигнут предел наблюдения; данные неполные",
+        "Observation limit reached; metadata is incomplete",
+    ),
+    (
+        "Keys.TrashUnsupported",
+        "Корзина не поддерживается; удаление безвозвратное после отдельного подтверждения",
+        "Trash is unsupported; permanent deletion requires separate confirmation",
+    ),
     (
         "Map.Cached",
         "Часть данных из кеша предыдущего сканирования; это не свежая проверка.",
@@ -136,8 +186,8 @@ const EXTRA_TRANSLATIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "Display.Keys",
-        "Стрелки: выбрать плитку. Tab / Shift+Tab: соседние объекты. Enter: открыть папку. Пробел / Ctrl+клик: отметить. Backspace / Esc: вверх. Alt+←/→: история. + / − / 0: масштаб карты. [ / ]: глубина. A: возраст. H: скрытые. I: изолировать поиск. G: глобальный поиск. F / /: поиск. E / правый клик: Проводник. S: TXT. P: запрос для разбора. C: снять отметки. F5: пересканировать. Ctrl+O: выбрать папку. Ctrl+ +/−/0: масштаб интерфейса. Колесо: масштаб, затем вход в заполнившую карту папку; назад на базовом масштабе — вверх. Shift+колесо / средняя кнопка: перемещение. Перетаскивание разделителя: ширина панели; двойной клик: сброс. Экспорт содержит пути выбранных данных; перед передачей проверьте их.",
-        "Arrows: select a tile. Tab / Shift+Tab: siblings. Enter: enter folder. Space / Ctrl+click: mark. Backspace / Esc: up. Alt+Left/Right: history. + / - / 0: map zoom. [ / ]: depth. A: age. H: hidden. I: isolate search. G: global search. F / /: search. E / right click: Explorer. S: TXT. P: review prompt. C: clear marks. F5: rescan. Ctrl+O: choose folder. Ctrl+ +/−/0: interface scale. Wheel: zoom, then enter a folder filling the viewport; zoom out at base scale goes up. Shift+wheel / middle button: pan. Drag divider: sidebar width; double click: reset. Exports contain selected data paths; inspect them before sharing.",
+        "Стрелки / H J K L: плитки. Tab / Shift+Tab: соседи. Enter: войти. Пробел / X / Ctrl+клик: отметить. Backspace / U: вверх. Esc: сброс поиска, отмена сканирования, сброс выбора, вверх. Alt+←/→: история. + / − / 0: масштаб карты. [ / ]: глубина. T: размер / файлы / возраст. D: на диске / длина. I: скрытые. G: системный диск. V: диски. P: сведения о выборе. O / правый клик: Проводник. S / /: поиск. C: предпросмотр. R / F5: скан. Q: выход. ?: клавиши. Ctrl+O: папка. Ctrl+ +/−/0: масштаб интерфейса. Ручной предпросмотр: S — TXT, A — запрос, ! — снять отметки, Enter — отдельное подтверждение удаления. Корзина не поддерживается. Перед передачей экспортированных путей проверьте их.",
+        "Arrows / H J K L: tiles. Tab / Shift+Tab: siblings. Enter: descend. Space / X / Ctrl+click: mark. Backspace / U: ascend. Esc: clear search, cancel scan, dismiss selection, ascend. Alt+Left/Right: history. + / - / 0: map zoom. [ / ]: depth. T: size / files / age. D: allocated / apparent. I: hidden. G: system disk. V: volumes. P: selection details. O / right click: Explorer. S / /: search. C: review. R / F5: scan. Q: exit. ?: keys. Ctrl+O: folder. Ctrl+ +/−/0: interface scale. Manual review: S saves TXT, A copies prompt, ! clears marks, Enter opens separate deletion confirmation. Trash is unsupported. Inspect exported paths before sharing.",
     ),
     ("Insights.Title", "Стоит посмотреть", "Worth a look"),
     (

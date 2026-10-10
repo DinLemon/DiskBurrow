@@ -46,6 +46,228 @@ fn index_of(runtime: &Runtime, path: &Path) -> usize {
 }
 
 #[test]
+fn port_parent_absorbs_children_and_covered_toggle_preserves_review() {
+    let fixture = tempfile::Builder::new()
+        .prefix("diskburrow-port-")
+        .tempdir()
+        .unwrap();
+    let root = fixture.path().join("scan");
+    let parent = root.join("Родитель");
+    fs::create_dir_all(&parent).unwrap();
+    let child = parent.join("child.bin");
+    fs::write(&child, b"owned fixture").unwrap();
+    let mut runtime = scanned(fixture.path().join("data"), &root);
+    runtime.command(Command::Mark(local(&child)));
+    runtime.command(Command::Mark(local(&parent)));
+    assert_eq!(runtime.marks.len(), 1, "parent must absorb its child");
+    assert_eq!(runtime.view.map_marked[0].path, local(&parent));
+    runtime.command(Command::PreviewManual);
+    idle(&mut runtime);
+    let id = runtime.view.review.as_ref().unwrap().id.clone();
+    runtime.command(Command::Mark(local(&child)));
+    assert_eq!(runtime.marks.len(), 1);
+    assert_eq!(runtime.view.review.as_ref().unwrap().id, id);
+    assert!(runtime.covered(&local(&child)));
+    assert!(child.exists());
+}
+
+fn forecast_idle(runtime: &mut Runtime) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        runtime.poll();
+        if runtime.forecast_job.is_none() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Forecast worker timed out");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn panel_forecast_uses_physical_metadata_without_creating_review_authority() {
+    let fixture = tempfile::Builder::new()
+        .prefix("diskburrow-port-")
+        .tempdir()
+        .unwrap();
+    let root = fixture.path().join("scan");
+    fs::create_dir_all(&root).unwrap();
+    let file = root.join("known.bin");
+    fs::write(&file, vec![7; 8192]).unwrap();
+    let mut runtime = scanned(fixture.path().join("data"), &root);
+    runtime.command(Command::Mark(local(&file)));
+    forecast_idle(&mut runtime);
+    let observation = runtime
+        .forecast_result
+        .as_ref()
+        .expect("Owned native metadata can be observed");
+    assert_eq!(observation.projection.reclaimable_files, 1);
+    assert!(observation.projection.known_reclaim_bytes > 0);
+    assert!(!observation.partial);
+    assert!(
+        runtime
+            .view
+            .map_forecast
+            .contains("Free after successful deletion")
+    );
+    assert_eq!(runtime.view.map_marked.len(), 1);
+    assert!(runtime.view.review.is_none());
+    assert!(runtime.manual_plan.is_none());
+    runtime.command(Command::ConfirmManual);
+    assert!(file.exists(), "Forecast must never authorize a deletion");
+}
+
+#[test]
+fn panel_changed_root_discards_pending_and_finished_forecasts() {
+    let fixture = tempfile::Builder::new()
+        .prefix("diskburrow-port-")
+        .tempdir()
+        .unwrap();
+    let root = fixture.path().join("scan");
+    let other = fixture.path().join("other");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(&other).unwrap();
+    let file = root.join("known.bin");
+    fs::write(&file, b"data").unwrap();
+    let mut runtime = scanned(fixture.path().join("data"), &root);
+    runtime.command(Command::Mark(local(&file)));
+    runtime.poll();
+    runtime.command(Command::SetRoot(local(&other)));
+    forecast_idle(&mut runtime);
+    assert!(runtime.forecast_result.is_none());
+    assert!(runtime.view.map_marked.is_empty());
+    assert!(
+        !runtime
+            .view
+            .map_forecast
+            .contains("Free after successful deletion")
+    );
+    assert!(file.exists());
+}
+
+#[test]
+fn panel_explicit_launch_waits_for_work_then_scans_with_session_overrides() {
+    let fixture = tempfile::Builder::new()
+        .prefix("diskburrow-port-")
+        .tempdir()
+        .unwrap();
+    let root = fixture.path().join("папка с пробелами");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("data.bin"), b"owned").unwrap();
+    let data = fixture.path().join("data");
+    let mut runtime = Runtime::new(data.clone()).unwrap();
+    assert!(
+        runtime.view.busy,
+        "Initial history read occupies coordinator"
+    );
+    runtime
+        .apply_launch(crate::cli::LaunchOverrides {
+            root: Some(local(&root)),
+            show_hidden: Some(false),
+            depth: Some(6),
+            metric: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(runtime.pending_launch.is_some());
+    assert!(runtime.take_map_open());
+    idle(&mut runtime);
+    assert_eq!(runtime.live.as_ref().unwrap().root, local(&root));
+    assert!(!runtime.view.settings.show_hidden);
+    assert_eq!(runtime.view.settings.map_depth, 6);
+    assert_eq!(runtime.view.map_metric, 2);
+    assert!(runtime.pending_launch.is_none());
+    let saved = SettingsStore::new(data).load();
+    assert_eq!(saved.map_depth, AppSettings::default().map_depth);
+}
+
+#[test]
+fn panel_confirmed_deletion_waits_for_observer_leases_and_queued_launch() {
+    use diskburrow_windows::{NativeFileApi as _, WindowsNativeFileApi};
+    let fixture = tempfile::Builder::new()
+        .prefix("diskburrow-port-")
+        .tempdir()
+        .unwrap();
+    let root = fixture.path().join("scan");
+    let parent = root.join("selected");
+    let next = fixture.path().join("next");
+    fs::create_dir_all(&parent).unwrap();
+    fs::create_dir_all(&next).unwrap();
+    let file = parent.join("child.bin");
+    fs::write(&file, b"owned child").unwrap();
+    let mut runtime = scanned(fixture.path().join("data"), &root);
+    runtime.command(Command::Mark(local(&parent)));
+    runtime.command(Command::PreviewManual);
+    idle(&mut runtime);
+    forecast_idle(&mut runtime);
+    let generation = runtime.forecast_generation;
+    let scan_id = runtime.scan_id().unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let path = local(&parent);
+    let tx = runtime.tx.clone();
+    let join = thread::spawn(move || {
+        let lease = WindowsNativeFileApi.open_directory(&path).unwrap();
+        ready_tx.send(()).unwrap();
+        let _ = release_rx.recv_timeout(Duration::from_secs(3));
+        drop(lease);
+        let _ = tx.send(Event::ForecastFinished {
+            generation,
+            scan_id,
+            observation: None,
+        });
+    });
+    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    runtime.forecast_job = Some(ForecastJob {
+        generation,
+        scan_id,
+        cancel: Cancellation::default(),
+        join,
+    });
+    runtime.command(Command::ConfirmManual);
+    runtime
+        .queue_launch(crate::cli::LaunchOverrides {
+            root: Some(local(&next)),
+            ..Default::default()
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_millis(250);
+    while Instant::now() < deadline {
+        runtime.poll();
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        file.exists(),
+        "Deletion must wait until canceled observer releases directory leases"
+    );
+    assert!(
+        runtime.last_report.is_none(),
+        "No attempt may finish before the observation barrier"
+    );
+    assert_eq!(
+        runtime.view.root,
+        local(&root),
+        "Queued launch must wait for deletion"
+    );
+    release_tx.send(()).unwrap();
+    idle(&mut runtime);
+    assert!(
+        !parent.exists(),
+        "Both owned child and directory should be deleted after release"
+    );
+    assert!(
+        runtime
+            .last_report
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .all(|r| r.outcome == CleanupOutcome::Deleted)
+    );
+    assert_eq!(runtime.view.root, local(&next));
+    assert!(runtime.pending_launch.is_none());
+}
+
+#[test]
 fn port_selected_txt_is_outermost_utf8_and_preserves_an_existing_destination() {
     let fixture = tempfile::Builder::new()
         .prefix("diskburrow-port-")

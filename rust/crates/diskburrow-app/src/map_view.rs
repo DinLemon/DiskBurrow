@@ -211,6 +211,10 @@ pub fn canvas_view(
         .overflow_hidden()
         .bg(palette.inset)
         .on_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, window, cx| {
+            if this.modal_open() {
+                cx.stop_propagation();
+                return;
+            }
             window.focus(&this.map_focus, cx);
             let bounds = this.map_bounds.get();
             let x = (event.position.x - bounds.origin.x).as_f32();
@@ -257,7 +261,7 @@ pub fn canvas_view(
             }
         }))
         .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-            if this.sidebar_drag {
+            if this.modal_open() || this.sidebar_drag {
                 return;
             }
             let bounds = this.map_bounds.get();
@@ -285,6 +289,10 @@ pub fn canvas_view(
             }),
         )
         .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+            if this.modal_open() {
+                cx.stop_propagation();
+                return;
+            }
             let lines = match event.delta {
                 ScrollDelta::Lines(delta) => delta.y,
                 ScrollDelta::Pixels(delta) => delta.y.as_f32() / 24.,

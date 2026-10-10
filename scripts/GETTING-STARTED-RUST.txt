@@ -1,4 +1,4 @@
-DiskBurrow 0.3.0-alpha.5 - Rust preview (unsigned)
+DiskBurrow 0.3.0-alpha.6 - Rust preview (unsigned)
 
 Requires Windows 10 22H2 / Windows 11 x64 and a working Direct3D 11 driver.
 Extract the complete ZIP. Run DiskBurrow.exe as an ordinary user.
@@ -53,3 +53,11 @@ Tray Exit stops the app. Closing isolated mode exits.
 LICENSE.txt and ThirdParty contain dependency license texts and attribution.
 manifest.json records source revision, executable checksum and runtime imports.
 Source: https://github.com/DinLemon/DiskBurrow/tree/main
+
+Map panel shows marked roots, read-only physical reclaim forecast and recommendations.
+Parent marks absorb children; unmark the parent to select children separately.
+Launch DiskBurrow.exe "E:\My folder" -a -H -d 4 --metric files to scan/open the map.
+A second normal launch forwards its folder to the existing instance after busy work.
+Map keys: space/X mark, C review, T mode, D size, I hidden, S search, O Explorer.
+Review: S TXT, A prompt, ! clear, Enter separate confirmation. Trash unsupported.
+Use --help for bounded ordinary-worker options and other supported switches.

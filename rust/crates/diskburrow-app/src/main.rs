@@ -1,12 +1,15 @@
 #![windows_subsystem = "windows"]
 mod appearance;
+mod cli;
 mod contract;
 mod git_inspection;
 mod helper;
 mod helper_args;
 mod input;
+mod launch_ipc;
 mod locale;
 mod map_view;
+mod mark_selection;
 mod operation;
 mod platform;
 mod recommendations;
@@ -21,19 +24,21 @@ use gpui_kit::{
     AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::{path::PathBuf, sync::mpsc};
+use std::sync::mpsc;
 
 fn main() {
     if let Err(error) = run() {
+        let console = platform::ParentConsole::attach();
         eprintln!("DiskBurrow: {error:#}");
         if !std::env::args().skip(1).any(|arg| {
             matches!(
                 arg.as_str(),
-                "--mft-helper" | "--data-dir" | "--verify-runtime" | "--help"
+                "--mft-helper" | "--data-dir" | "--verify-runtime" | "--help" | "-h"
             )
         }) {
             platform::startup_error(&format!("DiskBurrow could not start.\n\n{error:#}"));
         }
+        drop(console);
         std::process::exit(1);
     }
 }
@@ -46,74 +51,47 @@ fn run() -> Result<()> {
         !helper::is_elevated()?,
         "Start DiskBurrow as an ordinary user; only the separate NTFS reader requests administrator approval"
     );
-    let mut data = None;
-    let mut root = None;
-    let mut background = false;
-    let mut diagnostic = false;
-    let mut verification = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--data-dir" => {
-                i += 1;
-                data = Some(PathBuf::from(
-                    args.get(i)
-                        .ok_or_else(|| anyhow::anyhow!("Missing data directory"))?,
-                ));
-                diagnostic = true;
-            }
-            "--scan-root" => {
-                i += 1;
-                root = Some(
-                    args.get(i)
-                        .ok_or_else(|| anyhow::anyhow!("Missing scan root"))?
-                        .clone(),
-                );
-            }
-            "--background" => background = true,
-            "--verify-runtime" => {
-                i += 1;
-                verification =
-                    Some(PathBuf::from(args.get(i).ok_or_else(|| {
-                        anyhow::anyhow!("Missing verification report path")
-                    })?));
-            }
-            "--help" => {
-                println!(
-                    "DiskBurrow [--background] [--data-dir ABSOLUTE_DIRECTORY] [--scan-root LOCAL_DIRECTORY] [--verify-runtime NEW_ABSOLUTE_REPORT]"
-                );
-                return Ok(());
-            }
-            _ => anyhow::bail!("Unknown argument: {}", args[i]),
-        }
-        i += 1;
+    let mut options = cli::parse(&args)?;
+    if options.help {
+        platform::print_usage(cli::USAGE)?;
+        return Ok(());
     }
-    let data = data.map_or_else(platform::app_data_directory, Ok)?;
+    platform::validate_verification_launch(&args, &options)?;
+    options.resolve(&std::env::current_dir()?, &platform::system_root())?;
+    let diagnostic = options.data_dir.is_some();
+    let background = options.background;
+    let data = options
+        .data_dir
+        .map_or_else(platform::app_data_directory, Ok)?;
     ensure!(data.is_absolute(), "An absolute data directory is required");
-    if let Some(report) = verification {
-        ensure!(
-            diagnostic,
-            "Runtime verification requires an explicit --data-dir"
-        );
-        return verify::run(
-            data,
-            root.ok_or_else(|| {
-                anyhow::anyhow!("Runtime verification requires an explicit --scan-root")
-            })?,
-            &report,
-        );
+    if let Some(report) = options.verification {
+        return verify::run(data, options.launch.root.unwrap(), &report);
     }
-    let mut runtime = runtime::Runtime::new(data)?;
-    if let Some(root) = root {
-        runtime.command(contract::Command::SetRoot(root));
-    }
-    if !diagnostic {
+    let bridge = if !diagnostic {
         let (tx, rx) = mpsc::channel();
-        let bridge = platform::PlatformBridge::start(tx)?;
+        let payload = options
+            .launch
+            .is_explicit()
+            .then(|| serde_json::to_string(&options.launch))
+            .transpose()?;
+        let bridge = if payload.is_some() {
+            platform::PlatformBridge::start_with_launch(tx, payload.as_deref())?
+        } else {
+            platform::PlatformBridge::start(tx)?
+        };
         if !bridge.is_primary() {
             return Ok(());
         }
+        Some((bridge, rx))
+    } else {
+        None
+    };
+    let mut runtime = runtime::Runtime::new(data)?;
+    if let Some((bridge, rx)) = bridge {
         runtime.attach_bridge(bridge, rx);
+    }
+    if options.launch.is_explicit() {
+        runtime.apply_launch(options.launch)?;
     }
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)

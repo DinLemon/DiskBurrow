@@ -7,7 +7,11 @@ pub struct HelperArgs {
     pub parent: u32,
 }
 pub fn parse(args: &[String]) -> Result<Option<HelperArgs>, String> {
-    if !args.iter().any(|a| a == "--mft-helper") {
+    if !args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|a| a == "--mft-helper")
+    {
         return Ok(None);
     }
     if args.len() != 9 || args[0] != "--mft-helper" {
@@ -73,6 +77,13 @@ mod tests {
             "--parent".into(),
             "42".into(),
         ]
+    }
+    #[test]
+    fn positional_separator_does_not_activate_the_elevated_helper() {
+        assert_eq!(parse(&["--".into(), "--mft-helper".into()]).unwrap(), None);
+        let mut args = valid();
+        args.push("--".into());
+        assert!(parse(&args).is_err(), "Real helper grammar remains exact");
     }
     #[test]
     fn only_exact_local_volume_and_authenticated_parent_are_accepted() {
