@@ -34,6 +34,20 @@ use std::{
 };
 use uuid::Uuid;
 const ROW_LIMIT: usize = 2000;
+fn ranked_visible_directories(
+    directories: &[DirectoryObservation],
+    limit: usize,
+    mut visible: impl FnMut(&DirectoryObservation) -> bool,
+) -> Vec<&DirectoryObservation> {
+    let mut dirs: Vec<_> = directories.iter().collect();
+    dirs.sort_by_key(|directory| std::cmp::Reverse(directory.logical_bytes));
+    // Visibility resolves indexed ancestry. Only resolve enough ranked paths to
+    // fill the bounded view; hidden rows do not consume its visible-row limit.
+    dirs.into_iter()
+        .filter(|directory| visible(directory))
+        .take(limit)
+        .collect()
+}
 struct Active {
     token: u64,
     cancel: Cancellation,
@@ -2159,15 +2173,11 @@ impl Runtime {
                 })
                 .collect();
             self.view.issue_rows.sort_by(|a, b| a.path.cmp(&b.path));
-            let mut dirs: Vec<_> = snapshot
-                .directories
-                .iter()
-                .filter(|d| self.visible_path(&d.path))
-                .collect();
-            dirs.sort_by_key(|d| std::cmp::Reverse(d.logical_bytes));
+            let dirs = ranked_visible_directories(&snapshot.directories, ROW_LIMIT, |directory| {
+                self.visible_path(&directory.path)
+            });
             self.view.folders = dirs
                 .into_iter()
-                .take(ROW_LIMIT)
                 .map(|d| Row {
                     key: d.path.clone(),
                     path: d.path.clone(),
@@ -2839,6 +2849,81 @@ fn enrich_snapshot(snapshot: &mut ScanSnapshot, cancel: &Cancellation) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn folder_projection_preserves_stable_ranking_with_hidden_high_rows() {
+        let directories: Vec<_> = [
+            ("hidden-first", 90),
+            ("visible-low", 10),
+            ("visible-highest", 80),
+            ("visible-tie-a", 50),
+            ("visible-tie-b", 50),
+            ("hidden-highest", 100),
+            ("visible-tail", 0),
+        ]
+        .into_iter()
+        .map(|(path, logical_bytes)| DirectoryObservation {
+            path: path.into(),
+            logical_bytes,
+            allocated_bytes: Some(logical_bytes),
+            coverage_complete: true,
+        })
+        .collect();
+        let mut checks = 0;
+        let rows = ranked_visible_directories(&directories, 3, |directory| {
+            checks += 1;
+            !directory.path.starts_with("hidden")
+        });
+        assert_eq!(
+            rows.iter().map(|row| row.path.as_str()).collect::<Vec<_>>(),
+            ["visible-highest", "visible-tie-a", "visible-tie-b"]
+        );
+        assert_eq!(
+            checks, 5,
+            "visibility must stop after the third visible ranked row"
+        );
+    }
+    #[test]
+    fn folder_projection_stops_visibility_checks_after_visible_row_limit() {
+        let directories: Vec<_> = (0..10_000)
+            .map(|n| DirectoryObservation {
+                path: if n < 16 {
+                    format!("hidden-{n}")
+                } else {
+                    format!("visible-{n}")
+                },
+                logical_bytes: 10_000 - n,
+                allocated_bytes: None,
+                coverage_complete: true,
+            })
+            .collect();
+        let mut checks = 0;
+        let rows = ranked_visible_directories(&directories, 64, |directory| {
+            checks += 1;
+            !directory.path.starts_with("hidden")
+        });
+        assert_eq!(rows.len(), 64);
+        assert_eq!(rows.first().unwrap().path, "visible-16");
+        assert_eq!(rows.last().unwrap().path, "visible-79");
+        assert_eq!(
+            checks, 80,
+            "lower-ranked paths must not be resolved after the row limit"
+        );
+    }
+    #[test]
+    fn folder_projection_zero_limit_does_not_resolve_paths() {
+        let directories = [DirectoryObservation {
+            path: "visible".into(),
+            logical_bytes: 1,
+            allocated_bytes: None,
+            coverage_complete: true,
+        }];
+        assert!(
+            ranked_visible_directories(&directories, 0, |_| {
+                panic!("no visibility call is needed for zero rows")
+            })
+            .is_empty()
+        );
+    }
     #[test]
     fn port_system_theme_is_accepted_by_runtime() {
         let fixture = tempfile::tempdir().unwrap();

@@ -32,6 +32,12 @@ message pipes: same SID/executable peers, remote rejection, bounded 16-message q
 64 components and 16 KiB before metadata; pinned ancestors are opened sequentially.
 The helper remains a separate exact grammar; `--` positional data cannot activate it.
 
+Largest-folder projection ranks directory references before resolving visibility,
+and stops those path lookups after 2000 visible rows. Hidden higher-ranked rows do
+not consume the visible limit; equal-sized rows retain their original order.
+The missing-root native fixture uses an owned temporary directory on an available
+local drive, rather than assuming a fixed drive letter exists on hosted runners.
+
 Final full-suite, immutable review, portable EXE and hosted CI results are recorded
 with the exact source revision in the candidate's verification artifacts. Programmatic
 frames and actual EXE checks are distinct from manual UAC/tray/logon acceptance.
